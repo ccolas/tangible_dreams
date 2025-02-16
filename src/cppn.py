@@ -15,9 +15,9 @@ import cv2
 from PIL import Image
 
 class CPPN:
-    def __init__(self, output_path, with_cam=False, maxlen=None):
+    def __init__(self, output_path, params, maxlen=None):
         self.output_path = output_path
-        self.with_cam = with_cam
+        self.params = params
         self.n_inputs = 3
         self.n_hidden = 8
         self.n_outputs = 3
@@ -28,14 +28,14 @@ class CPPN:
         self.inputs = dict()
         self.needs_update = True
         self.first = True
-        if with_cam:
-            # Initialize camera
-            self.cap = cv2.VideoCapture(0)
-            if not self.cap.isOpened():
-                print("Warning: Could not open camera")
-                self.has_camera = False
-            else:
-                self.has_camera = True
+        # if with_cam:
+        #     # Initialize camera
+        #     self.cap = cv2.VideoCapture(0)
+        #     if not self.cap.isOpened():
+        #         print("Warning: Could not open camera")
+        #         self.has_camera = False
+        #     else:
+        #         self.has_camera = True
 
         # Initialize node biases
         self.biases = jnp.zeros(self.n_hidden)
@@ -49,8 +49,8 @@ class CPPN:
         self.rgb_biases = jnp.zeros(3)  # For RGB sigmoid centering
         # Add SET button state
         self.set_pressed = False
-        self.res = 2048
-        self.factor = 16/9
+        self.res = params['res']
+        self.factor = params['factor']
         for res in [32, 64, 128, 256, 512, 1024, 2048]:
             self.inputs[res] = self.generate_inputs(res)
 

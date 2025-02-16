@@ -4,11 +4,12 @@ from cppn import CPPN
 
 
 class MIDIController:
-    def __init__(self, output_path, debug=False):
+    def __init__(self, output_path, params):
         self.midi_in = rtmidi.MidiIn()
         self.output_path = output_path
-        self.cppn = CPPN(output_path)
-        self.debug = debug
+        self.cppn = CPPN(output_path, params)
+        self.params = params
+        self.debug = params['debug']
         self.setup_midi()
 
     def setup_midi(self):

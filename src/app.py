@@ -17,26 +17,30 @@ exp_id = "test"
 output_path = repo_path + f'outputs/{exp_id}/'
 os.makedirs(output_path, exist_ok=True)
 
-# TODO
-# calibrate each activation function
-# calibrate default zoom size
-# calibrate default slopes of output nodes
-# calibrate initial probability of connection
-# select carefully activation functions
-# optimize for speed with claude
-# when saving, save with higher res
-# add button to save as elites, then mutate these when sampling new network!
+# TODO:
+#  calibrate each activation function
+#  calibrate default zoom size
+#  calibrate default slopes of output nodes
+#  calibrate initial probability of connection
+#  select carefully activation functions
+#  optimize for speed with claude
+#  add button to save as elites, then mutate these when sampling new network!
 
 DEBUG = False
+RES = 2048
+FACTOR = 16/9
 
 async def main():
-    midi = MIDIController(output_path, debug=DEBUG)
+    params = dict(debug=DEBUG, res=RES, factor=FACTOR)
+    midi = MIDIController(output_path, params)
     plt.ion()
-    factor = 16/9
-    size = 1500
 
-    vis = create_backend('moderngl')  # or 'opencv'
-    vis.initialize(int(size * factor), size)
+    vis = create_backend('pygame')  # or 'opencv'
+    vis.initialize(
+        render_width=int(RES * FACTOR),
+        render_height=RES,
+        window_scale=0.5  # Adjust this to make window bigger/smaller
+    )
 
     try:
         # Generate initial image
