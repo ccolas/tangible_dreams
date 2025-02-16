@@ -18,7 +18,8 @@ output_path = repo_path + f'outputs/{exp_id}/'
 os.makedirs(output_path, exist_ok=True)
 
 # TODO:
-#  calibrate each activation function
+#  calibrate each activation function and inputs
+#  make it audio reactive?
 #  calibrate default zoom size
 #  calibrate default slopes of output nodes
 #  calibrate initial probability of connection
