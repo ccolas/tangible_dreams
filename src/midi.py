@@ -4,10 +4,11 @@ from cppn import CPPN
 
 
 class MIDIController:
-    def __init__(self, output_path):
+    def __init__(self, output_path, debug=False):
         self.midi_in = rtmidi.MidiIn()
         self.output_path = output_path
         self.cppn = CPPN(output_path)
+        self.debug = debug
         self.setup_midi()
 
     def setup_midi(self):
@@ -16,7 +17,14 @@ class MIDIController:
             if 'nanoKONTROL' in name:
                 self.midi_in.open_port(i)
                 break
-        self.midi_in.set_callback(self.midi_callback)
+        if not self.debug:
+            self.midi_in.set_callback(self.midi_callback)
+
+    def check_midi(self):
+        # Poll for MIDI messages
+        msg = self.midi_in.get_message()
+        if msg:
+            self.midi_callback(msg, None)
 
     def midi_callback(self, event, _):
         msg, _ = event
@@ -30,7 +38,7 @@ class MIDIController:
             control_type = 'slider'
             control = msg[0]
         value = msg[2]
-        # print(control_type, control, value, self.cppn.needs_update)
+        print(control_type, control, value, self.cppn.needs_update)
 
         # Handle SET button
         if control == 82:
@@ -45,7 +53,7 @@ class MIDIController:
                 self.cppn.inputs[self.cppn.res] = self.cppn.generate_inputs(self.cppn.res)
                 self.cppn.needs_update = True
                 print(f'Setting zoom to {value}')
-            elif 225 <= control <= 226:  # First four knobs for panning
+            elif 225 <= control <= 226:  # First 2 knobs for panning
                 value = 3 * (value / 64 - 1)  # Map to [-3, 3]
                 if control == 225:
                     self.cppn.x_offset = value
@@ -61,7 +69,7 @@ class MIDIController:
                 self.cppn.rgb_slopes = self.cppn.rgb_slopes.at[slope_idx].set(slope)
                 self.cppn.needs_update = True
                 print(f'Setting {["red", "green", "blue"][slope_idx]} tanh slope to {slope}')
-            elif control_type == 'knob' and 21 <= control <= 23:  # Last three knobs
+            elif control_type == 'knob' and 21 <= control <= 23:  # Last three knobs for RGB biases
                 channel = control - 21
                 if value == 2:  # Right turn
                     new_value = self.cppn.rgb_biases[channel] + 0.1
@@ -111,12 +119,6 @@ class MIDIController:
                 node_id = control
                 self.cppn.resample_in_connections(node_id)
                 print(f'Resampled input connections for node {node_id}')
-            # elif control_type == 'button' and 16 <= control <= 23 and value == 127:  # M buttons - add connection
-            #     node_id = control - 16
-            #     self.cppn.add_connection(node_id)
-            # elif control_type == 'button' and 0 <= control <= 7 and value == 127:  # R buttons - remove connection
-            #     node_id = control
-            #     self.cppn.remove_connection(node_id)
             elif 224 <= control <= 231:  # Sliders - bias
                 node_id = control - 224
                 bias = 2 * (value / 64 - 1)  # Map to [-5, 5]
@@ -132,7 +134,7 @@ class MIDIController:
                     increment = 0.03
                     new_value = self.cppn.multipliers[node_id] - increment
                 else:
-                    return
+                    new_value = self.cppn.multipliers[node_id]
                 self.cppn.multipliers = self.cppn.multipliers.at[node_id].set(new_value)
                 self.cppn.needs_update = True
                 print(f'Weight {node_id}: {new_value:.2f}')

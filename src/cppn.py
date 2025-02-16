@@ -6,11 +6,13 @@ from collections import deque
 import networkx as nx
 import numpy as np
 import time
+import matplotlib
 import matplotlib.pyplot as plt
 from jax import jit, vmap
 import jax
 from functools import partial
 import cv2
+from PIL import Image
 
 class CPPN:
     def __init__(self, output_path, with_cam=False, maxlen=None):
@@ -47,9 +49,9 @@ class CPPN:
         self.rgb_biases = jnp.zeros(3)  # For RGB sigmoid centering
         # Add SET button state
         self.set_pressed = False
-        self.res = 256
+        self.res = 2048
         self.factor = 16/9
-        for res in [32, 64, 128, 256, 512, 1024]:
+        for res in [32, 64, 128, 256, 512, 1024, 2048]:
             self.inputs[res] = self.generate_inputs(res)
 
 
@@ -444,11 +446,15 @@ class CPPN:
         self.save_minor_state()
         self.needs_update = True
 
-    def update(self):
+    def update(self, res=None):
         t_init = time.time()
         t_init_total = time.time()
         times = dict()
-        inputs = self.inputs[self.res]
+        if res is not None:
+            inputs = self.generate_inputs(res)
+        else:
+            res = self.res
+            inputs = self.inputs[res]
 
         # Pre-allocate activation array
         x = jnp.zeros((self.n_nodes, inputs.shape[1]))
@@ -476,81 +482,17 @@ class CPPN:
         t_init = time.time()
         # Extract and reshape output
         rgb = x[-self.n_outputs:]
-        h, w = self.res, int(self.res * self.factor)
+        h, w = res, int(res * self.factor)
         self.current_image = rgb.reshape(3, h, w).transpose(1, 2, 0)
         times['post']= time.time() - t_init
         times['total'] = time.time() - t_init_total
         print('times')
         for k, v in times.items():
-            print(k, v)
+            print('  ', k, v)
         if not self.first:
             self.needs_update = False
         self.first = False
         return self.current_image
-
-
-    # def update(self):
-    #     t_init_total = time.time()
-    #     times = dict()
-    #     t_init = time.time()
-    #     inputs = self.inputs[self.res]
-    #     total_pixels = inputs.shape[1]
-    #
-    #     # Pre-allocate the full activation array
-    #     # Using numpy instead of jax.numpy for better CPU performance when not using GPU
-    #     x = np.zeros((self.n_nodes, total_pixels))
-    #     x[:self.n_inputs] = np.array(inputs)  # Copy input values
-    #
-    #     # Pre-compute weight * multiplier products for hidden nodes
-    #     # This avoids recomputing these products for each pixel
-    #     weighted_connections = np.zeros_like(self.weights)
-    #     for i in range(self.n_inputs, self.n_inputs + self.n_hidden):
-    #         node_idx = i - self.n_inputs
-    #         weighted_connections[:, i] = self.weights[:, i] * self.multipliers[node_idx]
-    #
-    #     # Store activation functions in a list for faster lookup
-    #     activation_funcs = [self.activations[int(id_)] for id_ in self.current_activation_ids]
-    #     times['precomputations'] = time.time() - t_init
-    #     # First pass - compute all nodes
-    #     for i_cycle in range(2):
-    #         t_init = time.time()
-    #         if i_cycle == 0:
-    #             start = self.n_inputs
-    #         else:
-    #             start = self.cyclic_start
-    #
-    #         # Process hidden nodes
-    #         t_init2 = time.time()
-    #         for i in range(start, self.n_inputs + self.n_hidden):
-    #             node_idx = i - self.n_inputs
-    #             # Use pre-computed weighted connections
-    #             net = np.dot(weighted_connections[:, i], x) + self.biases[node_idx]
-    #             # Apply activation function
-    #             x[i] = activation_funcs[node_idx](net)
-    #         times['hidden'] = times.get('hidden', 0) + time.time() - t_init2
-    #         t_init2 = time.time()
-    #         # Process output nodes more efficiently
-    #         for i in range(self.n_inputs + self.n_hidden, self.n_nodes):
-    #             i_output = i - (self.n_inputs + self.n_hidden)
-    #             net = np.dot(self.weights[:, i], x)
-    #             # Optimize sigmoid computation
-    #             net = (net + self.rgb_biases[i_output]) * self.rgb_slopes[i_output]
-    #             x[i] = 1 / (1 + np.exp(-net))
-    #         times['output'] = times.get('hidden', 0) + time.time() - t_init2
-    #         times[f'cycle_{i_cycle}'] = time.time() - t_init
-    #     t_init = time.time()
-    #     # Reshape final output more efficiently
-    #     rgb = x[-self.n_outputs:]
-    #     h, w = self.res, int(self.res * self.factor)
-    #     self.current_image = rgb.reshape(3, h, w).transpose(1, 2, 0)
-    #     times['reshape'] = time.time() - t_init
-    #     times['total'] = time.time() - t_init_total
-    #     if not self.first:
-    #         self.needs_update = False
-    #     self.first = False
-    #     for k, v in times.items():
-    #         print(k, v)
-    #     return self.current_image
 
     def save_major_state(self):
         # Clear future states if we're not at the end
@@ -598,13 +540,22 @@ class CPPN:
             self.__dict__[key] = val
 
     def save_state(self):
+        
         timestamp = self.timestamp
         pkl_path = f"{self.output_path}/state_{timestamp}.pkl"
         img_path = f"{self.output_path}/image_{timestamp}.png"
+        print(pkl_path)
+        print(img_path)
         with open(pkl_path, 'wb') as f:
             pickle.dump(self.state, f)
+        img = self.update(res=2048)
         print(f'Saving output to {img_path}')
-        plt.imsave(img_path, self.current_image)
+        # Convert to uint8 range [0, 255]
+        np_img = np.array(img)
+        img_uint8 = (np_img * 255).astype('uint8')
+        # Save using PIL
+        im = Image.fromarray(img_uint8)
+        im.save(img_path)
 
     def load_major_state(self):
         if 0 <= self.major_index < len(self.major_history):
@@ -624,3 +575,4 @@ class CPPN:
     # def __del__(self):
     #     if self.has_camera:
     #         self.cap.release()
+

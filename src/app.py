@@ -1,8 +1,15 @@
 import asyncio
+import matplotlib
+matplotlib.use('TkAgg')  # or 'Qt5Agg' if you prefer
 import matplotlib.pyplot as plt
 import os
-from midi import MIDIController
+import numpy as np
+import cv2
+import jax.numpy as jnp
+import time
 
+from midi import MIDIController
+from viz import create_backend
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
@@ -20,34 +27,33 @@ os.makedirs(output_path, exist_ok=True)
 # when saving, save with higher res
 # add button to save as elites, then mutate these when sampling new network!
 
+DEBUG = False
 
 async def main():
-    midi = MIDIController(output_path)
+    midi = MIDIController(output_path, debug=DEBUG)
     plt.ion()
     factor = 16/9
-    # Create figure with initial size but resizable
-    fig, ax = plt.subplots(figsize=(6*factor, 6))
-    ax.set_xticks([])
-    ax.set_yticks([])
-    plt.subplots_adjust(left=0, right=1, bottom=0, top=1)
+    size = 1500
 
-    # Generate initial image
-    out = midi.cppn.update()
-    ax.imshow(out)
-    plt.pause(0.016)
+    vis = create_backend('moderngl')  # or 'opencv'
+    vis.initialize(int(size * factor), size)
 
-    while True:
-        try:
-            if True: #midi.cppn.needs_update:
+    try:
+        # Generate initial image
+        out = midi.cppn.update()
+        vis.update(out)
+
+        while True:
+            if DEBUG: midi.check_midi()
+            if midi.cppn.needs_update:
                 out = midi.cppn.update()
-                ax.clear()
-                ax.set_xticks([])
-                ax.set_yticks([])
-                ax.imshow(out)
-                plt.pause(0.00016)
+                times = vis.update(out)
+                print("Visualization times:", times)
             await asyncio.sleep(0.00016)
-        except KeyboardInterrupt:
-            break
+
+    except KeyboardInterrupt:
+        vis.cleanup()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
