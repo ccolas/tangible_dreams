@@ -170,6 +170,8 @@ class CPPN:
         basic = {
             'x': x,
             'y': y,
+            "x_sim": jnp.abs(x - x.mean()),
+            "y_sim": jnp.abs(y - y.mean()),
             'dist': jnp.sqrt(x ** 2 + y ** 2),  # Euclidean distance from center
         }
 
@@ -243,9 +245,11 @@ class CPPN:
 
         # Choose which inputs to use
         selected_inputs = [
-            input_maps['x'],
-            input_maps['y'],
-            input_maps['dist'],
+            # input_maps['x'],
+            # input_maps['y'],
+            input_maps['x_sim'],
+            input_maps['y_sim'],
+            input_maps['dist']
         ]
         self.n_inputs = len(selected_inputs)
         output = jnp.stack(selected_inputs).reshape(self.n_inputs, -1)
