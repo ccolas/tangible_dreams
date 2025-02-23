@@ -85,6 +85,7 @@ class MIDIController:
         else:
             if control == 94 and value == 127:  # Play - sample new network
                 self.cppn.sample_network()
+                self.cppn.inputs[self.cppn.res] = self.cppn.generate_inputs(self.cppn.res)
                 self.cppn.needs_update = True
             elif control == 95 and value == 127:  # Record - save state
                 self.cppn.save_state()

@@ -13,11 +13,13 @@ import jax
 from functools import partial
 import cv2
 from PIL import Image
+from src.audio_proc import AudioProcessor
 
 class CPPN:
     def __init__(self, output_path, params, maxlen=None):
         self.output_path = output_path
         self.params = params
+        self.use_audio = params['use_audio']
         self.n_inputs = 3
         self.n_hidden = 8
         self.n_outputs = 3
@@ -57,51 +59,133 @@ class CPPN:
 
         self.n_nodes = self.n_inputs + self.n_hidden + self.n_outputs
         self.adj_matrix = np.zeros((self.n_nodes, self.n_nodes))
+        # Add audio processor
+        self.audio = AudioProcessor(n_bands=8)
+        self.audio.start()
+
+        # Add audio reactive parameters
+        self.audio_multipliers = jnp.ones(self.n_hidden)
+        self.audio_biases = jnp.zeros(self.n_hidden)
+        self.audio_rgb = jnp.ones(3)
+
+        @jit
+        def weierstrass(x):
+            # Parameters calibrated for interesting output
+            a = 0.5  # Amplitude decay (0.4-0.6 works well)
+            b = 3.0  # Frequency multiplier (2-4 works well)
+
+            # Sum multiple cosine waves with increasing frequency and decreasing amplitude
+            result = jnp.zeros_like(x)
+            for i in range(4):
+                # Each iteration adds a higher frequency component
+                # Add phase shift to create more variation
+                result = result + a ** i * jnp.cos(b ** i * x + jnp.pi / 3)
+
+            # Scale output to reasonable range
+            return result * 0.4  # Scale factor to keep output roughly in [-1,1]
+
+        @jit
+        def takagi(x):
+            # Scale input for good variation
+            x = x * 0.5
+
+            # Parameters
+            w = 0.6  # Weight decay factor
+            n = 4  # Number of iterations
+
+            # Prepare weights and reshape for broadcasting
+            i_vals = jnp.arange(n, dtype=jnp.float32).reshape(-1, 1)  # Make column vector
+            weights = w ** i_vals
+            scales = 2.0 ** i_vals
+
+            # Broadcasting will now work correctly with x
+            scaled_x = scales * x
+            terms = weights * jnp.abs(scaled_x - jnp.round(scaled_x))
+
+            # Sum along axis 0 (the i_vals dimension)
+            result = jnp.sum(terms, axis=0)
+
+            return result - 0.5  # Center the output range
+
+        @jit
+        def riemann(x):
+            # Scale input for good coverage of sin function
+            x = x * 3.0
+
+            # Create the i values and reshape for broadcasting
+            i_vals = jnp.arange(1.0, 5.0)  # [1,2,3,4]
+            i_vals = i_vals.reshape(-1, 1)  # Make it a column vector for broadcasting
+
+            # Now when we multiply with x, broadcasting will work correctly
+            # x will be treated as a row vector
+            squared_i = i_vals * i_vals
+            terms = (1.0 / squared_i) * jnp.sin(squared_i * x)
+
+            # Sum along the first axis (the i values)
+            result = jnp.sum(terms, axis=0) * 0.7
+
+            return result
+
         self.activations = [
-            # jnp.tanh,  # Classic smooth bounded
-            jnp.sin,  # Basic periodic
-            # lambda x: x * jnp.sin(x),  # Growing oscillations
-            ##lambda x: jnp.sign(x) * jnp.log(1 + jnp.abs(x)),  # Log growth with sign boring
-            # lambda x: x / (1 + jnp.abs(x)),  # Smooth with long tails - boring?
-            # lambda x: jnp.sin(x) + jnp.sin(2.4 * x),  # Compound waves COOL
-            # lambda x: jnp.sin(x * jnp.sin(x)),  # Nested periodic cool
-            # lambda x: jnp.sign(x) * jnp.abs(x) ** 0.5,  # Signed square root
-            # # Fractal-inspired functions
-            # lambda x: jnp.sin(x) + 0.5 * jnp.sin(2 * x) + 0.25 * jnp.sin(4 * x),  # Perlin-like
-            # lambda x: 1 - 2 * jnp.abs(jnp.sin(x) - 0.5),  # Chaos-inspired
-            # lambda x: jnp.sin(8 * jnp.floor(x / 2))  # Cellular-like steps
+            lambda x: jnp.tanh(x * 3),  # 0: tanh with good range
+                # lambda x: jnp.clip(x, -1, 1),  # 1: linear bounded
+                # lambda x: jnp.abs(x * 0.7),  # 2: abs with good scaling
+            lambda x: jnp.cos(x * 2.3),  # 3: cos with good oscillation
+                # lambda x: jax.lax.select(  # 4: sinxx with handling for x=0
+                #     jnp.abs(x) < 1e-4,
+                #     jnp.ones_like(x),
+                #     jnp.sin(x * 6.67) / (x * 6.67)
+                # ),
+            lambda x: jnp.sin(x) + 0.5 * jnp.sin(2 * x) + 0.25 * jnp.sin(4 * x),  # 5: perlin-like
+                # lambda x: x * (1 / (1 + jnp.exp(-x * 1.5))),  # 6: swish
+            lambda x: jnp.clip(((x / 5) % 0.5) / 0.5, -1, 1),  # 7: modulo
+            # lambda x: jnp.exp(-(x * x) / 1.0),  # 8: gaussian
+            # # Weierstrass function (a=0.7, b=4, n=4)
+            # lambda x: weierstrass(x * 2.0),  # Scale input for good variation
+            #
+            # # Riemann function (n=4)
+            lambda x: riemann(x),
+            # lambda x: takagi(x),
         ]
+
+
+
         self.sample_network()  # Initialize weights and connections
         # Initialize JIT-compiled functions
         self._init_jitted_functions()
 
-    def get_camera_input(self, target_height, target_width):
-        """Capture, resize and normalize camera input"""
-        if not self.has_camera:
-            return np.zeros((target_height, target_width))
-
-        ret, frame = self.cap.read()
-        if not ret:
-            return np.zeros((target_height, target_width))
-
-        # Convert to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # Resize to match our target resolution
-        resized = cv2.resize(gray, (target_width, target_height))
-
-        # Normalize to [-1, 1] range
-        normalized = (resized.astype(np.float32) / 127.5) - 1
-
-        return normalized
+    # def get_camera_input(self, target_height, target_width):
+    #     """Capture, resize and normalize camera input"""
+    #     if not self.has_camera:
+    #         return np.zeros((target_height, target_width))
+    #
+    #     ret, frame = self.cap.read()
+    #     if not ret:
+    #         return np.zeros((target_height, target_width))
+    #
+    #     # Convert to grayscale
+    #     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    #
+    #     # Resize to match our target resolution
+    #     resized = cv2.resize(gray, (target_width, target_height))
+    #
+    #     # Normalize to [-1, 1] range
+    #     normalized = (resized.astype(np.float32) / 127.5) - 1
+    #
+    #     return normalized
 
     def _init_jitted_functions(self):
         # Compile core computations
+
+        @jit
+        def apply_activation(x, activation_id):
+            """Apply activation function based on ID using JAX's switch"""
+            return jax.lax.switch(activation_id, self.activations, x)
+
         @jit
         def process_hidden_node(weights, x, multiplier, bias, activation_id):
             net = jnp.dot(weights, x) * multiplier + bias
-            # Note: may need different approach for multiple activation functions
-            return jnp.sin(net) + jnp.sin(2.4 * net)
+            return apply_activation(net, activation_id)
 
         @jit
         def process_output_node(weights, x, slope, bias):
@@ -110,11 +194,11 @@ class CPPN:
 
         @partial(jit, static_argnums=(3, 4, 5))
         def process_network(x, weights, state_dict, n_inputs, n_hidden, cyclic_start):
-            # Process whole network for all pixels
             multipliers = state_dict['multipliers']
             biases = state_dict['biases']
             rgb_slopes = state_dict['rgb_slopes']
             rgb_biases = state_dict['rgb_biases']
+            activation_ids = state_dict['activation_ids']  # Add this
 
             def body_fun(i_cycle, x):
                 start = jnp.where(i_cycle == 0, n_inputs, cyclic_start)
@@ -128,7 +212,7 @@ class CPPN:
                             x,
                             multipliers[node_idx],
                             biases[node_idx],
-                            0  # activation_id - simplified for now
+                            activation_ids[node_idx]  # Pass activation ID
                         )
                     )
                     return x
@@ -156,7 +240,6 @@ class CPPN:
                 )
                 return x
 
-            # Run 3 cycles
             x = jax.lax.fori_loop(0, 2, lambda i, x: body_fun(i, x), x)
             return x
 
@@ -245,10 +328,10 @@ class CPPN:
 
         # Choose which inputs to use
         selected_inputs = [
-            # input_maps['x'],
-            # input_maps['y'],
-            input_maps['x_sim'],
-            input_maps['y_sim'],
+            input_maps['x'],
+            input_maps['y'],
+            input_maps['abs_x'],
+            input_maps['abs_y'],
             input_maps['dist']
             # input_maps['abs_x']
         ]
@@ -334,7 +417,7 @@ class CPPN:
         self.weights = (random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * self.adj_matrix
 
         # For activation functions, randomly assign one to each hidden node at start
-        self.current_activation_ids = random.randint(key, (self.n_hidden,), 0, len(self.activations)).astype(int)
+        self.activation_ids = random.randint(key, (self.n_hidden,), 0, len(self.activations)).astype(int)
 
         # Reset node parameters
         self.biases = jnp.zeros(self.n_hidden)
@@ -455,6 +538,52 @@ class CPPN:
         t_init = time.time()
         t_init_total = time.time()
         times = dict()
+
+        if self.use_audio:
+            # Get audio data
+            audio_bands = self.audio.get_bands()
+            # Scale down the influence of audio
+            # Adjust these scaling factors to control how much the audio affects each parameter
+            multiplier_influence = 0.3  # How much audio affects node multipliers
+            bias_influence = 0.2  # How much audio affects node biases
+            rgb_influence = 0.2  # How much audio affects colors
+
+            # Update audio reactive parameters with reduced influence
+            self.audio_multipliers = jnp.array([
+                1.0 + audio_bands[i % len(audio_bands)] * multiplier_influence
+                for i in range(self.n_hidden)
+            ])
+
+            self.audio_biases = jnp.array([
+                (audio_bands[(i + 2) % len(audio_bands)] * 2 - 1) * bias_influence
+                for i in range(self.n_hidden)
+            ])
+
+            self.audio_rgb = jnp.array([
+                1.0 + audio_bands[i] * rgb_influence
+                for i in range(3)
+            ])
+            times['audio'] = time.time() - t_init
+            t_init = time.time()
+            # Collect state into dict for JIT
+            state_dict = {
+                'multipliers': self.multipliers * self.audio_multipliers,
+                'biases': self.biases + self.audio_biases,
+                'rgb_slopes': self.rgb_slopes * self.audio_rgb,
+                'rgb_biases': self.rgb_biases,
+                'activation_ids': self.activation_ids,
+            }
+        else:
+            # Collect state into dict for JIT
+            state_dict = {
+                'multipliers': self.multipliers ,
+                'biases': self.biases,
+                'rgb_slopes': self.rgb_slopes,
+                'rgb_biases': self.rgb_biases,
+                'activation_ids': self.activation_ids,
+            }
+
+
         if res is not None:
             inputs = self.generate_inputs(res)
         else:
@@ -465,13 +594,7 @@ class CPPN:
         x = jnp.zeros((self.n_nodes, inputs.shape[1]))
         x = x.at[:self.n_inputs].set(inputs)
 
-        # Collect state into dict for JIT
-        state_dict = {
-            'multipliers': self.multipliers,
-            'biases': self.biases,
-            'rgb_slopes': self.rgb_slopes,
-            'rgb_biases': self.rgb_biases,
-        }
+
         times['pre'] = time.time() - t_init
         t_init = time.time()
         # Process network using JIT-compiled function
@@ -521,14 +644,16 @@ class CPPN:
         state = {
             'weights': self.weights,
             'adj_matrix': self.adj_matrix,
-            'activation_ids': self.current_activation_ids,
+            'activation_ids': self.activation_ids,
             'biases': self.biases,
             'multipliers': self.multipliers,
             'x_offset': self.x_offset,
             'y_offset': self.y_offset,
             'zoom': self.zoom,
             'rgb_slopes': self.rgb_slopes,
-            'rgb_biases': self.rgb_biases
+            'rgb_biases': self.rgb_biases,
+            'cyclic_start': self.cyclic_start,  # Add this
+            'node_order': self.node_order  # Add this
         }
         return state
 
@@ -581,3 +706,7 @@ class CPPN:
     #     if self.has_camera:
     #         self.cap.release()
 
+    def __del__(self):
+        # Clean up audio processor
+        if hasattr(self, 'audio'):
+            self.audio.stop()

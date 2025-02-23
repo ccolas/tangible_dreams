@@ -28,11 +28,12 @@ os.makedirs(output_path, exist_ok=True)
 #  add button to save as elites, then mutate these when sampling new network!
 
 DEBUG = False
-RES = 2048
+USE_AUDIO = False
+RES = 1024
 FACTOR = 16/9
 
 async def main():
-    params = dict(debug=DEBUG, res=RES, factor=FACTOR)
+    params = dict(debug=DEBUG, res=RES, factor=FACTOR, use_audio=USE_AUDIO)
     midi = MIDIController(output_path, params)
     plt.ion()
 
@@ -40,7 +41,7 @@ async def main():
     vis.initialize(
         render_width=int(RES * FACTOR),
         render_height=RES,
-        window_scale=0.5  # Adjust this to make window bigger/smaller
+        window_scale=1  # Adjust this to make window bigger/smaller
     )
 
     try:
