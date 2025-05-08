@@ -107,12 +107,12 @@ class MIDIController:
                 self.cppn.load_minor_state()
             elif control_type == 'button' and 8 <= control <= 15 and value == 127:  # S buttons - change activation
                 node_id = control - 8
-                self.cppn.current_activation_ids = self.cppn.current_activation_ids.at[node_id].set(
-                    (self.cppn.current_activation_ids[node_id] + 1) % len(self.cppn.activations)
+                self.cppn.activation_ids = self.cppn.activation_ids.at[node_id].set(
+                    (self.cppn.activation_ids[node_id] + 1) % len(self.cppn.activations)
                 )
                 self.cppn.save_minor_state()
                 self.cppn.needs_update = True
-                print(f'New activation {node_id}: {self.cppn.activations[self.cppn.current_activation_ids[node_id]]}')
+                print(f'New activation {node_id}: {self.cppn.activations[self.cppn.activation_ids[node_id]]}')
             elif control_type == 'button' and 16 <= control <= 23 and value == 127:  # M buttons - resample output connections
                 node_id = control - 16
                 self.cppn.resample_out_connections(node_id)

@@ -128,6 +128,10 @@ class CPPN:
 
         self.activations = [
             lambda x: jnp.tanh(x * 3),  # 0: tanh with good range
+            lambda x: jnp.sin(x) + jnp.sin(2.4 * x),
+            lambda x: jnp.tanh(x * 3),  # 0: tanh with good range
+            lambda x: jnp.sin(x) + jnp.sin(2.4 * x),
+            lambda x: x,
                 # lambda x: jnp.clip(x, -1, 1),  # 1: linear bounded
                 # lambda x: jnp.abs(x * 0.7),  # 2: abs with good scaling
             lambda x: jnp.cos(x * 2.3),  # 3: cos with good oscillation
@@ -136,15 +140,15 @@ class CPPN:
                 #     jnp.ones_like(x),
                 #     jnp.sin(x * 6.67) / (x * 6.67)
                 # ),
-            lambda x: jnp.sin(x) + 0.5 * jnp.sin(2 * x) + 0.25 * jnp.sin(4 * x),  # 5: perlin-like
+            # lambda x: jnp.sin(x) + 0.5 * jnp.sin(2 * x) + 0.25 * jnp.sin(4 * x),  # 5: perlin-like
                 # lambda x: x * (1 / (1 + jnp.exp(-x * 1.5))),  # 6: swish
-            lambda x: jnp.clip(((x / 5) % 0.5) / 0.5, -1, 1),  # 7: modulo
+            # lambda x: jnp.clip(((x / 5) % 0.5) / 0.5, -1, 1),  # 7: modulo
             # lambda x: jnp.exp(-(x * x) / 1.0),  # 8: gaussian
             # # Weierstrass function (a=0.7, b=4, n=4)
             # lambda x: weierstrass(x * 2.0),  # Scale input for good variation
             #
             # # Riemann function (n=4)
-            lambda x: riemann(x),
+            # lambda x: riemann(x),
             # lambda x: takagi(x),
         ]
 
@@ -328,10 +332,10 @@ class CPPN:
 
         # Choose which inputs to use
         selected_inputs = [
-            input_maps['x'],
-            input_maps['y'],
+            # input_maps['x'],
+            # input_maps['y'],
             input_maps['abs_x'],
-            input_maps['abs_y'],
+            # input_maps['abs_y'],
             input_maps['dist']
             # input_maps['abs_x']
         ]
