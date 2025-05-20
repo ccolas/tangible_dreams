@@ -1,0 +1,170 @@
+import serial
+import time
+from collections import defaultdict
+import os
+
+# === CONFIG ===
+PORT = '/dev/ttyUSB0'
+BAUD = 115200
+START_BYTE = 0xAA
+END_BYTE = 0xBB
+TIMEOUT = 0.004  # 4ms
+TIMEOUT_TOTAL = 0.0055
+MAX_RETRIES = 3
+RUNS = 500
+NODES = range(1, 19)
+
+def ensure_low_latency(port_path):
+    try:
+        device = os.path.basename(port_path)
+        latency_path = f"/sys/bus/usb-serial/devices/{device}/latency_timer"
+        if os.path.exists(latency_path):
+            with open(latency_path, 'r') as f:
+                if int(f.read().strip()) != 1:
+                    with open(latency_path, 'w') as f_out:
+                        f_out.write('1')
+                    print(f"[INFO] Set latency_timer to 1 ms for {device}")
+        else:
+            print(f"[WARN] latency_timer path not found for {device}")
+    except Exception as e:
+        print(f"[ERROR] Failed to set latency_timer: {e}")
+
+ensure_low_latency(PORT)
+
+# === PARSE NODE RESPONSE ===
+def parse_node_response(data):
+    if len(data) < 2:
+        return None
+
+    node_id = data[0]
+    flag = data[1]
+
+    if flag == 0x01:
+        return node_id, {}
+
+    if flag == 0xFF:
+        if len(data) < 3:
+            return None
+
+        change_count = data[2]
+        parsed_data = {}
+        index = 3
+
+        for _ in range(change_count):
+            if index >= len(data):
+                return None  # incomplete pin block
+
+            pin = data[index]
+            index += 1
+
+            if pin < 8:
+                if index + 1 >= len(data):
+                    return None
+                value = data[index] | (data[index + 1] << 8)
+                index += 2
+            elif pin < 10:
+                if index >= len(data):
+                    return None
+                value = data[index]
+                index += 1
+            else:
+                return None  # invalid pin ID
+
+            parsed_data[pin] = value
+
+        return node_id, parsed_data
+
+    return None
+
+
+
+# === POLL A SINGLE NODE ===
+def poll_single_node(ser, node_id, command=0x00):
+    attempt = 0
+    if command == 0x00:
+        timeout = TIMEOUT
+    else:
+        timeout = TIMEOUT_TOTAL
+    while attempt < MAX_RETRIES:
+        ser.reset_input_buffer()
+        ser.write(bytes([0xCC, node_id, command]))
+        # ser.write(bytes([node_id, command]))
+
+        buffer = bytearray()
+        reading = False
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            byte = ser.read()
+            if not byte:
+                continue
+            byte = byte[0]
+
+            if byte == START_BYTE:
+                buffer = bytearray()
+                reading = True
+            elif byte == END_BYTE and reading:
+                break
+            elif reading:
+                buffer.append(byte)
+
+        if len(buffer) >= 2:
+            full = bytearray([START_BYTE]) + buffer + bytearray([END_BYTE])
+            # print(f"[RAW] Node {node_id} → {full.hex()}")
+            return buffer  # buffer includes: [node_id, flag, payload...]
+
+        attempt += 1
+
+    print(f"[MISS] Node {node_id}: No valid response")
+    return None
+
+# === POLL ALL NODES ===
+def poll_nodes():
+    with serial.Serial(PORT, BAUD, timeout=TIMEOUT) as ser:
+        time.sleep(1)
+
+        for run in range(1, RUNS + 1):
+            # print(f"\n=== Simulation Run {run} ===")
+            node_data = {}
+            missed_nodes = []
+            timings = defaultdict(float)
+            command = 0x01 if run == 1 else 0x00
+
+            for node_id in NODES:
+                t_start = time.time()
+                buffer = poll_single_node(ser, node_id, command)
+                t_read = time.time()
+
+                if buffer:
+                    parsed = parse_node_response(buffer)
+                    if parsed:
+                        node_data[node_id] = parsed[1]
+                    else:
+                        missed_nodes.append(node_id)
+                        print(f"[FAIL] Node {node_id}: Failed to parse → {buffer.hex()}")
+                else:
+                    missed_nodes.append(node_id)
+
+                t_parse = time.time()
+                timings['read'] += (t_read - t_start) * 1000
+                timings['parse'] += (t_parse - t_read) * 1000
+
+
+
+            # print("\n[Node Data]")
+            any_change = False
+            for node_id in NODES:
+                if node_id in node_data:
+                    if len(node_data[node_id]) > 0:
+                        any_change = True
+                        print(f"  Node {node_id}: {node_data[node_id]}")
+                else:
+                    print(f"  Node {node_id}: ❌")
+            # if any_change:
+            total_time = sum(timings.values())
+            if any_change:
+                print(f"[Timing] Total: {total_time:.2f} ms")
+                # for k, v in timings.items():
+                #     print(f"  {k}: {v:.2f} ms")
+
+poll_nodes()

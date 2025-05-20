@@ -1,6 +1,6 @@
 import rtmidi
 
-from cppn import CPPN
+from midi_cppn import CPPN
 
 
 class MIDIController:

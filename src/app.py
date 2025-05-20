@@ -1,15 +1,9 @@
 import asyncio
-import matplotlib
-matplotlib.use('TkAgg')  # or 'Qt5Agg' if you prefer
-import matplotlib.pyplot as plt
 import os
-import numpy as np
-import cv2
-import jax.numpy as jnp
-import time
 
-from midi import MIDIController
-from viz import create_backend
+from src.midi import MIDIController
+from src.rs845 import RS485Controller
+from src.viz import create_backend
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
@@ -27,17 +21,22 @@ os.makedirs(output_path, exist_ok=True)
 #  optimize for speed with claude
 #  add button to save as elites, then mutate these when sampling new network!
 
-DEBUG = False
-USE_AUDIO = False
+DEBUG = True
 RES = 1024
 FACTOR = 16/9
+CONTROLLER = 'rs845'
 
 async def main():
-    params = dict(debug=DEBUG, res=RES, factor=FACTOR, use_audio=USE_AUDIO)
-    midi = MIDIController(output_path, params)
-    plt.ion()
+    params = dict(debug=DEBUG, res=RES, factor=FACTOR)
+    if CONTROLLER == 'midi':
+        controller = MIDIController(output_path, params)
+    elif CONTROLLER == 'rs845':
+        controller = RS485Controller(output_path, params)
+        asyncio.create_task(controller.start_polling_loop())  # run in background
+    else:
+        raise NotImplementedError
 
-    vis = create_backend('pygame')  # or 'opencv'
+    vis = create_backend('pygame')
     vis.initialize(
         render_width=int(RES * FACTOR),
         render_height=RES,
@@ -46,13 +45,13 @@ async def main():
 
     try:
         # Generate initial image
-        out = midi.cppn.update()
+        out = controller.cppn.update()
         vis.update(out)
 
         while True:
-            if DEBUG: midi.check_midi()
-            if midi.cppn.needs_update:
-                out = midi.cppn.update()
+            # if DEBUG: midi.check_midi()
+            if controller.cppn.needs_update:
+                out = controller.cppn.update()
                 times = vis.update(out)
                 print("Visualization times:", times)
             await asyncio.sleep(0.00016)
