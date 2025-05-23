@@ -31,9 +31,9 @@ class CPPN:
         self.output_ids = list(range(self.n_inputs + self.n_hidden, self.n_nodes))
 
         # Parameters
-        self.adj_matrix = np.zeros((self.n_nodes, self.n_nodes))
+        self.adj_matrix = jnp.zeros((self.n_nodes, self.n_nodes))
         self.biases = jnp.zeros(self.n_hidden)
-        self.slopes = jnp.zeros(self.n_hidden)
+        self.slopes = jnp.ones(self.n_hidden)
         self.weights = jnp.zeros((self.n_nodes, self.n_nodes))
         self.activation_ids = jnp.zeros(self.n_hidden, dtype=int)
 
@@ -43,7 +43,7 @@ class CPPN:
         self.output_modes = jnp.zeros(3, dtype=int)  # 0=sigmoid RGB, 1=clipped HSL
 
         # Input configuration (for inputs 1–6)
-        self.input_function_ids = [0, 1, 2, 3, 4, 5]  # Index into input basis functions
+        self.input_function_ids = jnp.array([0, 1, 2, 3, 4, 6])  # Index into input basis functions
         self.input_function_keys = ['dist', 'angle', 'radial_wave', 'grid', 'r_mod', 'spiral', 'ripple', 'star']
         self.input_zooms = jnp.ones(self.n_inputs)  # Per-input zoom
         self.input_biases = jnp.zeros(self.n_inputs)  # Per-input bias
@@ -199,8 +199,8 @@ class CPPN:
 
         self.needs_update = False
 
-        if self.debug:
-            print(f"[CPPN] Updated at res={res} in {time.time() - t0:.3f}s")
+        # if self.debug:
+        #     print(f"[CPPN] Updated at res={res} in {time.time() - t0:.3f}s")
 
         return self.current_image
 
@@ -236,31 +236,65 @@ class CPPN:
         return False
 
     def sample_network(self):
-        while True:
-            # Step 1: Sample forward connections only
-            self.adj_matrix = np.zeros((self.n_nodes, self.n_nodes))
-            for i in range(self.n_inputs + self.n_hidden):
-                for j in range(self.n_inputs, self.n_nodes):
-                    if j > i and np.random.rand() < 0.8:
-                        self.adj_matrix[i, j] = 1
+        key = random.PRNGKey(int(time.time()))
 
-            # Step 2: Check for valid paths and compute cyclic start
-            if self.validate_graph():
+        while True:
+            self.sample_adj_matrix()
+            G = nx.Graph(self.np_adj_matrix)
+            path_found = any(
+                nx.has_path(G, inp, out)
+                for inp in self.input_ids
+                for out in self.output_ids
+            )
+            if path_found:
                 break
 
-        # Step 3: Random weights only on existing connections
-        self.weights = jnp.array(
-            (np.random.randn(self.n_nodes, self.n_nodes) * self.adj_matrix).astype(np.float32)
-        )
+        key = random.PRNGKey(int(time.time()))
 
-        # Step 4: Convert adjacency to JAX array
-        self.adj_matrix = jnp.array(self.adj_matrix)
-
+        self.weights = (random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * self.np_adj_matrix
         self.activation_ids = jnp.array(np.random.randint(0, len(self.activations), size=self.n_hidden), dtype=jnp.int32)
 
         self.needs_update = True
         print(f"[CPPN] Sampled new network with cyclic start at {self.cyclic_start}")
 
+    def sample_adj_matrix(self):
+        """Sample and reorder adjacency matrix for optimal computation order"""
+        self.adj_matrix = np.zeros((self.n_nodes, self.n_nodes))
+        for i in range(self.n_inputs + self.n_hidden):
+            for j in range(self.n_inputs, self.n_nodes):
+                prob = 0.5 if j > i else 0.2
+                if np.random.rand() < prob:
+                    self.adj_matrix[i, j] = 1
+
+        # Compute optimal ordering for hidden nodes
+        ordered_nodes = list(range(self.n_inputs))
+        available_nodes = set(range(self.n_inputs, self.n_inputs + self.n_hidden))
+        while available_nodes:
+            found_one = False
+            for node in available_nodes:
+                input_nodes = set(np.where(self.adj_matrix[:, node])[0])
+                if input_nodes.issubset(set(ordered_nodes)):
+                    ordered_nodes.append(node)
+                    available_nodes.remove(node)
+                    found_one = True
+                    break
+            if not found_one:
+                self.cyclic_start = len(ordered_nodes)
+                ordered_nodes.extend(sorted(available_nodes))
+                break
+
+        ordered_nodes.extend(range(self.n_inputs + self.n_hidden, self.n_nodes))
+
+        # Reorder adjacency matrix
+        reordered_adj = np.zeros_like(self.adj_matrix)
+        for i, old_i in enumerate(ordered_nodes):
+            for j, old_j in enumerate(ordered_nodes):
+                reordered_adj[i, j] = self.adj_matrix[old_i, old_j]
+
+        self.adj_matrix = jnp.array(reordered_adj)
+        self.np_adj_matrix = reordered_adj
+        self.node_order = ordered_nodes
+        print(f"[CPPN] Cyclic dependencies start at node {self.cyclic_start}")
 
 
 if __name__ == '__main__':

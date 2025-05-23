@@ -3,12 +3,15 @@ import time
 import os
 from src.cppn import CPPN
 import asyncio
+import numpy as np
 
 def norm_value(value, magnitude):
     return value / 1023 - 0.5 * 2 * magnitude
 
 def exp_value(value):
-    return 0.01 * (10000) ** (value / 1023)  # use exponential mapping
+    norm = (value - 512) / 512  # normalize to [-1, 1]
+    scaled = np.sign(norm) * (np.exp(np.abs(norm) * 3) - 1) / (np.exp(3) - 1)
+    return 3 * scaled
 
 
 class RS485Controller:
@@ -26,7 +29,7 @@ class RS485Controller:
         self.total_timeout = 0.05
         self.max_retries = 3
         # self.full_refresh_rate = 5
-        self.node_ids = range(1, 19)
+        self.node_ids = range(1, 20)
         self.command = 0x01  # ask for full data
         self.start_byte = 0xAA
         self.end_byte = 0xBB
@@ -47,12 +50,19 @@ class RS485Controller:
             latency_path = f"/sys/bus/usb-serial/devices/{device}/latency_timer"
             if os.path.exists(latency_path):
                 with open(latency_path, 'r') as f:
-                    if int(f.read().strip()) != 1:
-                        with open(latency_path, 'w') as f_out:
-                            f_out.write('1')
-                        print(f"[INFO] Set latency_timer to 1 ms for {device}")
+                    current = int(f.read().strip())
+                    if current != 1:
+                        print(f"[WARN] latency_timer is {current}, not 1")
+                        print(f"[ACTION] Run this to fix it:\n  sudo sh -c 'echo 1 > {latency_path}'")
+                        assert False
+                    else:
+                        print(f"[INFO] latency_timer already set to 1 ms for {device}")
+            else:
+                print(f"[WARN] latency_timer path not found for {device}")
         except Exception as e:
-            print(f"[ERROR] Failed to set latency_timer: {e}")
+            print(f"[ERROR] Failed to check latency_timer: {e}")
+            assert False
+
 
     async def start_polling_loop(self):
         print('Starting RS845', flush=True)
@@ -174,22 +184,23 @@ class RS485Controller:
         # Sensors 3-5 are weights on inputs
         # Sensors 6-7 are bias and slope
         # digital sensors 8-9 are switches
-
         for node_id, node_data in changes.items():
             node_id -= 1
-            if node_id in self.input_ids:
+            if node_id in self.input_ids and node_id == 1:
                 # no inputs
-                # sensor 5 (optional) is a switch on inptu function
+                # sensor 5 (optional) is a switch on input function
                 # sensor 6-7 are bias and zoom
                 # digital 8 is negation switch
                 # digital 9 is deactivating the node
                 for sensor_id, sensor_value in node_data.items():
-                    if sensor_id == 4:
+                    if sensor_id == 7:
                         zoom_val = exp_value(sensor_value)
+                        print(f'zoom val: {sensor_value}, {zoom_val}')
                         self.cppn.input_zooms = self.cppn.input_zooms.at[node_id].set(zoom_val)
-                    elif sensor_id == 3:
+                    elif sensor_id == 6:
                         bias_val = exp_value(sensor_value)
-                        self.cppn.input_biases = self.cppn.input_biases.at[node_id].set(bias_val)
+                        print(f'input func val: {bias_val}')
+                        self.cppn.input_function_ids = self.cppn.input_function_ids.at[node_id].set(sensor_value)
                     # if sensor_id == 5 and node_id in [5, 6]:
                     #     assert sensor_value < len(self.cppn.input_function_keys)
                     #     self.cppn.input_function_ids = self.cppn.input_function_ids.at[input_node_id].set(sensor_value)
@@ -208,24 +219,34 @@ class RS485Controller:
 
 
 
-            elif node_id in self.middle_ids:
+            elif node_id in self.middle_ids and node_id==7:
                 # sensors 0-2 are input ids
                 # sensors 3-5 are input weights
-                # sensors 6-7 are bias and slope of activ
+                # sensor 6 is bias or slope
+                # sensor 7 is activ
                 # digital sensor 8 is switch input 1 to CV control
                 # digital sensor 9 is deactivating the node
                 for sensor_id, sensor_value in node_data.items():
-                    if sensor_id == 4:
+                    if sensor_id == 3:
                         slot = 0
                         input_idx = int(node_data.get(slot, -1))
+                        input_idx = 1  # int(node_data.get(slot, -1))
+                        self.cppn.adj_matrix = self.cppn.adj_matrix.at[input_idx, node_id].set(1)
                         if input_idx >= 0:
                             weight = exp_value(sensor_value)
                             self.cppn.weights = self.cppn.weights.at[input_idx, node_id].set(weight)
                             if self.cppn.adj_matrix[input_idx, node_id]:
                                 print(f'weight update node {node_id}, {weight}')
-                    elif sensor_id == 3:
+                    elif sensor_id == 6:
+                        bias_val = exp_value(sensor_value)
+                        print(f'bias val: {bias_val}')
                         self.cppn.biases = self.cppn.biases.at[node_id].set(exp_value(sensor_value))
-
+                    elif sensor_id == 9:
+                        print(f'node active: {sensor_value}')
+                        self.cppn.node_active = self.cppn.node_active.at[node_id].set(int(sensor_value))
+                    elif sensor_id == 7:
+                        print(f'node activation function: {sensor_value}')
+                        self.cppn.activation_ids = self.cppn.activation_ids.at[node_id].set(int(sensor_value))
                 # use_cv = bool(node_data.get(8, 0)) or self.cppn.cv_override[middle_node_id]
                     # if sensor_id in [0, 1, 2]:  # Input node ids
                     #     source_id = int(sensor_value)
@@ -268,25 +289,27 @@ class RS485Controller:
                     #     self.cppn.node_active = self.cppn.node_active.at[middle_node_id].set(int(sensor_value))
                     # else:
                     #     raise ValueError
-            elif node_id in self.output_ids:
+            elif node_id in self.output_ids and node_id == 17:
                 # sensors 0-2 are input ids
                 # sensors 3-5 are input weights
                 # sensors 6-7 are bias and slope
                 # digital sensor 8 is switch input 1 to CV control
                 # digital sensor 9 switches between rgb and hsl
-
+                output_node_id = node_id - self.output_ids[0]
                 for sensor_id, sensor_value in node_data.items():
-                    if sensor_id == 4:
+                    if sensor_id == 6:
                         slot = 0
-                        input_idx = int(node_data.get(slot, -1))
+                        input_idx = 7#int(node_data.get(slot, -1))
+                        self.cppn.adj_matrix = self.cppn.adj_matrix.at[input_idx, node_id].set(1)
                         if input_idx >= 0:
                             weight = exp_value(sensor_value)
                             self.cppn.weights = self.cppn.weights.at[input_idx, node_id].set(weight)
                             if self.cppn.adj_matrix[input_idx, node_id]:
-                                print(f'weight update node {node_id}, {weight}')
-                    elif sensor_id == 3:
+                                print(f'output weight update node {node_id}, {weight}')
+                    elif sensor_id == 7:
                         bias = exp_value(sensor_value)
-                        self.cppn.biases = self.cppn.biases.at[node_id].set(bias)
+                        print(f'output bias val: {bias}')
+                        self.cppn.output_biases = self.cppn.output_biases.at[output_node_id].set(bias)
                     # use_cv = bool(node_data.get(8, 0)) or self.cppn.cv_override[output_node_id]
                     #
                     # if sensor_id in [0, 1, 2]:  # Input node ids

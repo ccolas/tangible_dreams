@@ -53,7 +53,7 @@ async def main():
             if controller.cppn.needs_update:
                 out = controller.cppn.update()
                 times = vis.update(out)
-                print("Visualization times:", times)
+                # print("Visualization times:", times)
             await asyncio.sleep(0.00016)
 
     except KeyboardInterrupt:

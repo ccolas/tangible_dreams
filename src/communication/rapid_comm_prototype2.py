@@ -11,8 +11,9 @@ END_BYTE = 0xBB
 TIMEOUT = 0.004  # 4ms
 TIMEOUT_TOTAL = 0.0055
 MAX_RETRIES = 3
-RUNS = 500
-NODES = range(1, 19)
+RUNS = 3000000
+NODES = range(1,20)
+NODES_TO_PLOT = [1, 7, 17]
 
 def ensure_low_latency(port_path):
     try:
@@ -20,15 +21,18 @@ def ensure_low_latency(port_path):
         latency_path = f"/sys/bus/usb-serial/devices/{device}/latency_timer"
         if os.path.exists(latency_path):
             with open(latency_path, 'r') as f:
-                if int(f.read().strip()) != 1:
-                    with open(latency_path, 'w') as f_out:
-                        f_out.write('1')
-                    print(f"[INFO] Set latency_timer to 1 ms for {device}")
+                current = int(f.read().strip())
+                if current != 1:
+                    print(f"[WARN] latency_timer is {current}, not 1")
+                    print(f"[ACTION] Run this to fix it:\n  sudo sh -c 'echo 1 > {latency_path}'")
+                    assert False
+                else:
+                    print(f"[INFO] latency_timer already set to 1 ms for {device}")
         else:
             print(f"[WARN] latency_timer path not found for {device}")
     except Exception as e:
-        print(f"[ERROR] Failed to set latency_timer: {e}")
-
+        print(f"[ERROR] Failed to check latency_timer: {e}")
+        assert False
 ensure_low_latency(PORT)
 
 # === PARSE NODE RESPONSE ===
@@ -155,9 +159,10 @@ def poll_nodes():
             any_change = False
             for node_id in NODES:
                 if node_id in node_data:
-                    if len(node_data[node_id]) > 0:
-                        any_change = True
-                        print(f"  Node {node_id}: {node_data[node_id]}")
+                    if node_id in NODES_TO_PLOT:
+                        if len(node_data[node_id]) > 0:
+                            any_change = True
+                            print(f"  Node {node_id}: {node_data[node_id]}")
                 else:
                     print(f"  Node {node_id}: ❌")
             # if any_change:
