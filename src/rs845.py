@@ -8,11 +8,18 @@ import numpy as np
 def norm_value(value, magnitude):
     return value / 1023 - 0.5 * 2 * magnitude
 
-def exp_value(value):
-    norm = (value - 512) / 512  # normalize to [-1, 1]
+def exp_symmetric(value, vmin=0, vmax=1023, range_=10):
+    # Normalize to [-1, 1], centered at midpoint
+    norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
+    # Apply symmetric exponential scaling
     scaled = np.sign(norm) * (np.exp(np.abs(norm) * 3) - 1) / (np.exp(3) - 1)
-    return 3 * scaled
+    return range_ * scaled
 
+def exp_positive(value, vmin=0, vmax=1023, log_range=3):
+    # Normalize to [-1, 1], centered at midpoint
+    norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
+    # Scale symmetrically around log10(1) = 0
+    return 10 ** (norm * log_range)
 
 class RS485Controller:
     def __init__(self, output_path, params):
@@ -36,9 +43,10 @@ class RS485Controller:
         self.sync_byte = 0xCC
 
         # identify node ids
-        self.input_ids = [1, 2, 3, 4, 5]
-        self.middle_ids = list(range(6, 17))
+        self.input_ids = [1, 2, 3, 4, 5, 6]
+        self.middle_ids = list(range(7, 17))
         self.output_ids = [17, 18, 19]
+        self.real_nodes = [1, 7, 17]
 
         # param ranges
         self.weight_range = [-3, 3]
@@ -71,8 +79,12 @@ class RS485Controller:
 
             while True:
                 changes = self.poll_nodes_once(ser)
-                if changes:
-                    self.handle_update(changes)
+                filtered_changes = dict()
+                for k, v in changes.items():
+                    if k in self.real_nodes:
+                        filtered_changes[k] = v
+                if filtered_changes:
+                    self.handle_update(filtered_changes)
                 if self.command == 0x01: self.command = 0x00  # ask for udpates only
                 await asyncio.sleep(0.00016)  # match main loop timing
 
@@ -185,8 +197,8 @@ class RS485Controller:
         # Sensors 6-7 are bias and slope
         # digital sensors 8-9 are switches
         for node_id, node_data in changes.items():
-            node_id -= 1
             if node_id in self.input_ids and node_id == 1:
+                node_idx = node_id - 1
                 # no inputs
                 # sensor 5 (optional) is a switch on input function
                 # sensor 6-7 are bias and zoom
@@ -194,13 +206,15 @@ class RS485Controller:
                 # digital 9 is deactivating the node
                 for sensor_id, sensor_value in node_data.items():
                     if sensor_id == 7:
-                        zoom_val = exp_value(sensor_value)
+                        zoom_val = exp_positive(sensor_value)
                         print(f'zoom val: {sensor_value}, {zoom_val}')
-                        self.cppn.input_zooms = self.cppn.input_zooms.at[node_id].set(zoom_val)
+                        self.cppn.input_zooms = self.cppn.input_zooms.at[node_idx].set(zoom_val)
                     elif sensor_id == 6:
-                        bias_val = exp_value(sensor_value)
-                        print(f'input func val: {bias_val}')
-                        self.cppn.input_function_ids = self.cppn.input_function_ids.at[node_id].set(sensor_value)
+                        print(f'input func val: {sensor_value}')
+                        self.cppn.input_function_ids = self.cppn.input_function_ids.at[node_idx].set(sensor_value)
+                    elif sensor_id == 9:
+                        print(f'input node active: {sensor_value}')
+                        self.cppn.node_active = self.cppn.node_active.at[node_idx].set(int(sensor_value))
                     # if sensor_id == 5 and node_id in [5, 6]:
                     #     assert sensor_value < len(self.cppn.input_function_keys)
                     #     self.cppn.input_function_ids = self.cppn.input_function_ids.at[input_node_id].set(sensor_value)
@@ -220,6 +234,8 @@ class RS485Controller:
 
 
             elif node_id in self.middle_ids and node_id==7:
+                node_idx = node_id - 1
+
                 # sensors 0-2 are input ids
                 # sensors 3-5 are input weights
                 # sensor 6 is bias or slope
@@ -227,26 +243,38 @@ class RS485Controller:
                 # digital sensor 8 is switch input 1 to CV control
                 # digital sensor 9 is deactivating the node
                 for sensor_id, sensor_value in node_data.items():
+                    if sensor_id in [0, 1]:  # Input node ids
+                        source_id = int(sensor_value)
+                        source_idx = source_id - 1
+                        old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
+                        if old_source_idx >= 0:
+                            self.cppn.adj_matrix = self.cppn.adj_matrix.at[old_source_idx, node_idx].set(0)  # remove previous connection
+                            self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1  # udpate record
+                            print(f'disconnecting {old_source_idx + 1} from {node_id}')
+                        if source_idx >= 0:
+                            self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx  # keep track of connected nodes
+                            self.cppn.adj_matrix = self.cppn.adj_matrix.at[source_idx, node_idx].set(1)
+                            print(f'connecting {source_id} to {node_id}')
                     if sensor_id == 3:
                         slot = 0
                         input_idx = int(node_data.get(slot, -1))
-                        input_idx = 1  # int(node_data.get(slot, -1))
-                        self.cppn.adj_matrix = self.cppn.adj_matrix.at[input_idx, node_id].set(1)
+                        input_idx = 0  # int(node_data.get(slot, -1))
+                        self.cppn.adj_matrix = self.cppn.adj_matrix.at[input_idx, node_idx].set(1)
                         if input_idx >= 0:
-                            weight = exp_value(sensor_value)
-                            self.cppn.weights = self.cppn.weights.at[input_idx, node_id].set(weight)
-                            if self.cppn.adj_matrix[input_idx, node_id]:
+                            weight = exp_symmetric(sensor_value)
+                            self.cppn.weights = self.cppn.weights.at[input_idx, node_idx].set(weight)
+                            if self.cppn.adj_matrix[input_idx, node_idx]:
                                 print(f'weight update node {node_id}, {weight}')
                     elif sensor_id == 6:
-                        bias_val = exp_value(sensor_value)
+                        bias_val = exp_symmetric(sensor_value)
                         print(f'bias val: {bias_val}')
-                        self.cppn.biases = self.cppn.biases.at[node_id].set(exp_value(sensor_value))
+                        self.cppn.biases = self.cppn.biases.at[node_idx].set(bias_val)
                     elif sensor_id == 9:
                         print(f'node active: {sensor_value}')
-                        self.cppn.node_active = self.cppn.node_active.at[node_id].set(int(sensor_value))
+                        self.cppn.node_active = self.cppn.node_active.at[node_idx].set(int(sensor_value))
                     elif sensor_id == 7:
                         print(f'node activation function: {sensor_value}')
-                        self.cppn.activation_ids = self.cppn.activation_ids.at[node_id].set(int(sensor_value))
+                        self.cppn.activation_ids = self.cppn.activation_ids.at[node_idx].set(int(sensor_value))
                 # use_cv = bool(node_data.get(8, 0)) or self.cppn.cv_override[middle_node_id]
                     # if sensor_id in [0, 1, 2]:  # Input node ids
                     #     source_id = int(sensor_value)
@@ -295,21 +323,35 @@ class RS485Controller:
                 # sensors 6-7 are bias and slope
                 # digital sensor 8 is switch input 1 to CV control
                 # digital sensor 9 switches between rgb and hsl
-                output_node_id = node_id - self.output_ids[0]
+                node_idx = node_id - 1
+                output_node_idx = node_id - self.output_ids[0]
                 for sensor_id, sensor_value in node_data.items():
+                    if sensor_id in [1]:  # Input node ids
+                        source_id = int(sensor_value)
+                        source_idx = source_id - 1
+                        old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
+                        if old_source_idx >= 0:
+                            self.cppn.adj_matrix = self.cppn.adj_matrix.at[old_source_idx, node_idx].set(0)  # remove previous connection
+                            self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1  # udpate record
+                            print(f'disconnecting {old_source_idx + 1} from {node_id}')
+                        if source_idx >= 0:
+                            self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx  # keep track of connected nodes
+                            self.cppn.adj_matrix = self.cppn.adj_matrix.at[source_idx, node_idx].set(1)
+                            print(f'connecting {source_id} to {node_id}')
+
                     if sensor_id == 6:
                         slot = 0
-                        input_idx = 7#int(node_data.get(slot, -1))
-                        self.cppn.adj_matrix = self.cppn.adj_matrix.at[input_idx, node_id].set(1)
+                        input_idx = 6#int(node_data.get(slot, -1))
+                        self.cppn.adj_matrix = self.cppn.adj_matrix.at[input_idx, node_idx].set(1)
                         if input_idx >= 0:
-                            weight = exp_value(sensor_value)
-                            self.cppn.weights = self.cppn.weights.at[input_idx, node_id].set(weight)
-                            if self.cppn.adj_matrix[input_idx, node_id]:
+                            weight = exp_symmetric(sensor_value)
+                            self.cppn.weights = self.cppn.weights.at[input_idx, node_idx].set(weight)
+                            if self.cppn.adj_matrix[input_idx, node_idx]:
                                 print(f'output weight update node {node_id}, {weight}')
                     elif sensor_id == 7:
-                        bias = exp_value(sensor_value)
+                        bias = exp_symmetric(sensor_value)
                         print(f'output bias val: {bias}')
-                        self.cppn.output_biases = self.cppn.output_biases.at[output_node_id].set(bias)
+                        self.cppn.output_biases = self.cppn.output_biases.at[output_node_idx].set(bias)
                     # use_cv = bool(node_data.get(8, 0)) or self.cppn.cv_override[output_node_id]
                     #
                     # if sensor_id in [0, 1, 2]:  # Input node ids

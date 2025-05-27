@@ -52,7 +52,7 @@ class CPPN:
         # Node masking
         self.node_active = jnp.ones(self.n_inputs + self.n_hidden)
         self.cv_override = jnp.zeros(self.n_nodes)
-        self.inputs_1 = np.full(self.n_nodes, -1, dtype=int)  # track what gets connected on inputs
+        self.inputs_nodes_record = np.full((self.n_nodes, 3), -1, dtype=int)  # track what gets connected on inputs
 
         # Activations
         self.activations = activation_fns
@@ -127,7 +127,6 @@ class CPPN:
                 end = n_inputs + n_hidden
 
                 def hidden_loop(i, x):
-                    h_idx = i - n_inputs
                     return x.at[i].set(
                         process_hidden_node(
                             weights[:, i],
@@ -135,7 +134,7 @@ class CPPN:
                             state['biases'][i],
                             state['slopes'][i],
                             state['activation_ids'][i],
-                            state['node_active'][h_idx]
+                            state['node_active'][i]
                         )
                     )
 
@@ -180,7 +179,7 @@ class CPPN:
             'zooms': self.input_zooms,
             'biases_input': self.input_biases,
             'inversions': self.input_inverted,
-            'node_active': self.node_active[:self.n_inputs],
+            'node_active': self.node_active,
             'biases': self.biases,
             'slopes': self.slopes,
             'activation_ids': self.activation_ids,
@@ -236,7 +235,6 @@ class CPPN:
         return False
 
     def sample_network(self):
-        key = random.PRNGKey(int(time.time()))
 
         while True:
             self.sample_adj_matrix()
@@ -262,7 +260,7 @@ class CPPN:
         self.adj_matrix = np.zeros((self.n_nodes, self.n_nodes))
         for i in range(self.n_inputs + self.n_hidden):
             for j in range(self.n_inputs, self.n_nodes):
-                prob = 0.5 if j > i else 0.2
+                prob = 0.5 if j > i else 0.1
                 if np.random.rand() < prob:
                     self.adj_matrix[i, j] = 1
 
