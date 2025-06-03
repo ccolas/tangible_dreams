@@ -11,12 +11,13 @@ import jax
 from functools import partial
 from PIL import Image
 from src.save.audio_proc import AudioProcessor
+print(jax.devices())  # lists all available devices (CPU, GPU, TPU)
+print(jax.default_backend())  # shows the default backend being used
 
 class CPPN:
     def __init__(self, output_path, params, maxlen=None):
         self.output_path = output_path
         self.params = params
-        self.use_audio = params['use_audio']
         self.n_inputs = 3
         self.n_hidden = 8
         self.n_outputs = 3
@@ -116,11 +117,11 @@ class CPPN:
             return result
 
         self.activations = [
-            lambda x: jnp.tanh(x * 3),  # 0: tanh with good range
+            # lambda x: jnp.tanh(x * 3),  # 0: tanh with good range
             lambda x: jnp.sin(x) + jnp.sin(2.4 * x),
             lambda x: jnp.tanh(x * 3),  # 0: tanh with good range
-            lambda x: jnp.sin(x) + jnp.sin(2.4 * x),
-            lambda x: x,
+            # lambda x: jnp.sin(x) + jnp.sin(2.4 * x),
+            # lambda x: x,
                 # lambda x: jnp.clip(x, -1, 1),  # 1: linear bounded
                 # lambda x: jnp.abs(x * 0.7),  # 2: abs with good scaling
             lambda x: jnp.cos(x * 2.3),  # 3: cos with good oscillation
@@ -305,7 +306,7 @@ class CPPN:
             # input_maps['x'],
             # input_maps['y'],
             input_maps['abs_x'],
-            # input_maps['abs_y'],
+            input_maps['abs_y'],
             input_maps['dist']
             # input_maps['abs_x']
         ]
@@ -513,49 +514,15 @@ class CPPN:
         t_init_total = time.time()
         times = dict()
 
-        if self.use_audio:
-            # Get audio data
-            audio_bands = self.audio.get_bands()
-            # Scale down the influence of audio
-            # Adjust these scaling factors to control how much the audio affects each parameter
-            multiplier_influence = 0.3  # How much audio affects node multipliers
-            bias_influence = 0.2  # How much audio affects node biases
-            rgb_influence = 0.2  # How much audio affects colors
 
-            # Update audio reactive parameters with reduced influence
-            self.audio_multipliers = jnp.array([
-                1.0 + audio_bands[i % len(audio_bands)] * multiplier_influence
-                for i in range(self.n_hidden)
-            ])
-
-            self.audio_biases = jnp.array([
-                (audio_bands[(i + 2) % len(audio_bands)] * 2 - 1) * bias_influence
-                for i in range(self.n_hidden)
-            ])
-
-            self.audio_rgb = jnp.array([
-                1.0 + audio_bands[i] * rgb_influence
-                for i in range(3)
-            ])
-            times['audio'] = time.time() - t_init
-            t_init = time.time()
-            # Collect state into dict for JIT
-            state_dict = {
-                'multipliers': self.multipliers * self.audio_multipliers,
-                'biases': self.biases + self.audio_biases,
-                'rgb_slopes': self.rgb_slopes * self.audio_rgb,
-                'rgb_biases': self.rgb_biases,
-                'activation_ids': self.activation_ids,
-            }
-        else:
-            # Collect state into dict for JIT
-            state_dict = {
-                'multipliers': self.multipliers ,
-                'biases': self.biases,
-                'rgb_slopes': self.rgb_slopes,
-                'rgb_biases': self.rgb_biases,
-                'activation_ids': self.activation_ids,
-            }
+        # Collect state into dict for JIT
+        state_dict = {
+            'multipliers': self.multipliers ,
+            'biases': self.biases,
+            'rgb_slopes': self.rgb_slopes,
+            'rgb_biases': self.rgb_biases,
+            'activation_ids': self.activation_ids,
+        }
 
 
         if res is not None:

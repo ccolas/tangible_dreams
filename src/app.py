@@ -24,12 +24,13 @@ os.makedirs(output_path, exist_ok=True)
 DEBUG = True
 RES = 1024
 FACTOR = 16/9
-CONTROLLER = 'rs845'
+CONTROLLER = 'midi'
 
 async def main():
     params = dict(debug=DEBUG, res=RES, factor=FACTOR)
     if CONTROLLER == 'midi':
         controller = MIDIController(output_path, params)
+        asyncio.create_task(controller.start_polling_loop())  # async MIDI polling
     elif CONTROLLER == 'rs845':
         controller = RS485Controller(output_path, params)
         asyncio.create_task(controller.start_polling_loop())  # run in background
@@ -49,11 +50,10 @@ async def main():
         vis.update(out)
 
         while True:
-            # if DEBUG: midi.check_midi()
             if controller.cppn.needs_update:
                 out = controller.cppn.update()
                 times = vis.update(out)
-                # print("Visualization times:", times)
+                print("Visualization times:", times)
             await asyncio.sleep(0.00016)
 
     except KeyboardInterrupt:

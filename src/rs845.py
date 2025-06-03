@@ -30,7 +30,7 @@ class RS485Controller:
         self.cppn = CPPN(output_path, params)
 
         # RS485 config
-        self.port = params.get('port', '/dev/ttyUSB0')
+        self.port = params.get('port', '/dev/ttyUSB1')
         self.baud = 115200
         self.timeout = 0.004
         self.total_timeout = 0.05
@@ -53,22 +53,19 @@ class RS485Controller:
         self.ensure_low_latency()
 
     def ensure_low_latency(self):
-        try:
-            device = os.path.basename(self.port)
-            latency_path = f"/sys/bus/usb-serial/devices/{device}/latency_timer"
-            if os.path.exists(latency_path):
-                with open(latency_path, 'r') as f:
-                    current = int(f.read().strip())
-                    if current != 1:
-                        print(f"[WARN] latency_timer is {current}, not 1")
-                        print(f"[ACTION] Run this to fix it:\n  sudo sh -c 'echo 1 > {latency_path}'")
-                        assert False
-                    else:
-                        print(f"[INFO] latency_timer already set to 1 ms for {device}")
-            else:
-                print(f"[WARN] latency_timer path not found for {device}")
-        except Exception as e:
-            print(f"[ERROR] Failed to check latency_timer: {e}")
+        device = os.path.basename(self.port)
+        latency_path = f"/sys/bus/usb-serial/devices/{device}/latency_timer"
+        if os.path.exists(latency_path):
+            with open(latency_path, 'r') as f:
+                current = int(f.read().strip())
+                if current != 1:
+                    print(f"[WARN] latency_timer is {current}, not 1")
+                    print(f"[ACTION] Run this to fix it:\n  sudo sh -c 'echo 1 > {latency_path}'")
+                    assert False
+                else:
+                    print(f"[INFO] latency_timer already set to 1 ms for {device}")
+        else:
+            print(f"[WARN] latency_timer path not found for {device}")
             assert False
 
 

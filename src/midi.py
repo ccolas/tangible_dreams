@@ -1,6 +1,7 @@
 import rtmidi
+import asyncio
 
-from midi_cppn import CPPN
+from src.midi_cppn import CPPN
 
 
 class MIDIController:
@@ -14,17 +15,28 @@ class MIDIController:
 
     def setup_midi(self):
         ports = self.midi_in.get_ports()
+        midi_connected = False
         for i, name in enumerate(ports):
             if 'nanoKONTROL' in name:
                 self.midi_in.open_port(i)
+                print('Midi connected')
+                midi_connected = True
                 break
+        assert midi_connected
         if not self.debug:
             self.midi_in.set_callback(self.midi_callback)
 
+    async def start_polling_loop(self):
+        while True:
+            self.check_midi()
+            await asyncio.sleep(0.001)  # ~1000Hz polling rate
+
     def check_midi(self):
-        # Poll for MIDI messages
-        msg = self.midi_in.get_message()
-        if msg:
+        # Poll and process all pending MIDI messages this frame (max 100 to avoid lockups)
+        for _ in range(100):
+            msg = self.midi_in.get_message()
+            if not msg:
+                break
             self.midi_callback(msg, None)
 
     def midi_callback(self, event, _):
