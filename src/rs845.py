@@ -27,6 +27,7 @@ class RS485Controller:
         self.params = params
         self.debug = params.get('debug', False)
 
+        params['n_middle_nodes'] = 10
         self.cppn = CPPN(output_path, params)
 
         # RS485 config

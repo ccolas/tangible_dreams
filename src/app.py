@@ -27,7 +27,7 @@ FACTOR = 16/9
 CONTROLLER = 'midi'
 
 async def main():
-    params = dict(debug=DEBUG, res=RES, factor=FACTOR)
+    params = dict(debug=DEBUG, res=RES, factor=FACTOR)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
     if CONTROLLER == 'midi':
         controller = MIDIController(output_path, params)
         asyncio.create_task(controller.start_polling_loop())  # async MIDI polling
@@ -48,7 +48,6 @@ async def main():
         # Generate initial image
         out = controller.cppn.update()
         vis.update(out)
-
         while True:
             if controller.cppn.needs_update:
                 out = controller.cppn.update()

@@ -1,18 +1,29 @@
 import time
+
+import PIL.Image
 import numpy as np
 import jax.numpy as jnp
 from jax import random, jit, lax
 from collections import deque
 import networkx as nx
+from PIL import Image
+import pickle
+import cv2
+import matplotlib.pyplot as plt
 
 
 from viz import create_backend
-from src.cppn_utils import activation_fns, build_coordinate_grid, define_coordinate_inputs
+from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions
 
 class CPPN:
     def __init__(self, output_path, params):
         self.output_path = output_path
         self.params = params
+        self.t_start = time.time()
+        self.last_time = 0
+        self.update_period = 0.03
+        self.reactive = False
+        self.cam_input = False
 
         # General config
         self.default_res = 1024
@@ -22,9 +33,10 @@ class CPPN:
 
         # Architecture
         self.n_inputs = 6
-        self.n_hidden = 10
+        self.n_hidden = params['n_middle_nodes']
         self.n_outputs = 3
         self.n_nodes = self.n_inputs + self.n_hidden + self.n_outputs
+        self.n_cycles = 3
 
         self.input_ids = list(range(0, self.n_inputs))
         self.middle_ids = list(range(self.n_inputs, self.n_inputs + self.n_hidden))
@@ -34,20 +46,21 @@ class CPPN:
         self.adj_matrix = jnp.zeros((self.n_nodes, self.n_nodes))
         self.biases = jnp.zeros(self.n_hidden)
         self.slopes = jnp.ones(self.n_hidden)
+        self.slope_mods = jnp.zeros(self.n_hidden)
         self.weights = jnp.zeros((self.n_nodes, self.n_nodes))
         self.activation_ids = jnp.zeros(self.n_hidden, dtype=int)
 
         # Output transformation (RGB or HSL mode)
         self.output_slopes = jnp.ones(3)   # scaling for output channels
+        self.output_slope_mods = jnp.zeros(3)   # scaling for output channels
         self.output_biases = jnp.zeros(3)  # sigmoid or linear bias
         self.output_modes = jnp.zeros(3, dtype=int)  # 0=sigmoid RGB, 1=clipped HSL
 
         # Input configuration (for inputs 1–6)
-        self.input_function_ids = jnp.array([0, 1, 2, 3, 4, 6])  # Index into input basis functions
-        self.input_function_keys = ['dist', 'angle', 'radial_wave', 'grid', 'r_mod', 'spiral', 'ripple', 'star']
+        self.input_function_ids = jnp.array([0, 1, 2, 3, 5, 4])  # Index into input basis functions
         self.input_zooms = jnp.ones(self.n_inputs)  # Per-input zoom
         self.input_biases = jnp.zeros(self.n_inputs)  # Per-input bias
-        self.input_inverted = jnp.zeros(self.n_inputs, dtype=int)  # Per-input invertion
+        # self.input_inverted = jnp.zeros(self.n_inputs, dtype=int)  # Per-input invertion
 
         # Node masking
         self.node_active = jnp.ones(self.n_inputs + self.n_hidden)
@@ -58,11 +71,15 @@ class CPPN:
         self.activations = activation_fns
 
         # Precomputed coordinate grids
-        X_low, Y_low = build_coordinate_grid(self.default_res, self.factor)
-        X_high, Y_high = build_coordinate_grid(self.high_res, self.factor)
+        self.input_functions = input_functions
+        self.coords = {self.default_res: build_coordinate_grid(self.default_res, self.factor),
+                       self.high_res: build_coordinate_grid(self.high_res, self.factor)}
+        self.img_shapes = {self.default_res: self.coords[self.default_res][0].shape,
+                           self.high_res: self.coords[self.high_res][0].shape}
 
-        self.input_maps = {self.default_res: define_coordinate_inputs(X_low, Y_low),
-                           self.high_res: define_coordinate_inputs(X_high, Y_high)}
+        # Camera input
+        self.cam = cv2.VideoCapture(0)  # webcam index 0
+        self.cam_img = np.zeros(self.img_shapes[self.default_res], dtype=np.float32)  # normalized grayscale
 
         # Runtime
         self.needs_update = True
@@ -73,6 +90,103 @@ class CPPN:
         self._init_jitted_functions()
         self.sample_network()
 
+        self.set_pressed = False
+        if params.get('load_from'):
+            self.set_state(state_path=params['load_from'])
+
+    def update_cam(self, res=None):
+        if res is None:
+            res = self.default_res
+        # TODO: find something better here
+        if self.cam_input:
+            time = self.time
+            if time - self.last_time > self.update_period:
+                target_shape = self.img_shapes[res]
+                ret, frame = self.cam.read()
+                if not ret:
+                    return
+
+                # Flip for mirror view
+                gray = cv2.flip(cv2.cvtColor(cv2.flip(frame, 1), cv2.COLOR_BGR2GRAY), 1)
+
+                # Denoise with Gaussian blur
+                k = 11
+                sigma = 1
+                blurred = cv2.GaussianBlur(gray, (k, k), sigma)
+                blurred = cv2.resize(blurred, (target_shape[1], target_shape[0]))  # W x H
+
+                grad_x = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+                grad_y = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+                grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+                self.cam_img = grad_mag / (grad_mag.max() + 1e-6)
+
+                # self.cam_img = discretized.astype(np.float32)
+                self.needs_update = True
+
+    # def reactive_update(self):
+    #     if self.reactive:
+    #         time = self.time
+    #         if time - self.last_time > self.update_period:
+    #             self.last_time = time
+    #
+    #             # Toroidal signal with two incommensurate frequencies
+    #             alpha, beta = 1.5, 2.3
+    #             signal1 = np.sin(alpha * time)
+    #             signal2 = np.cos(beta * time)
+    #
+    #             # Combine or use independently
+    #             value = signal1 * 0.5 + signal2 * 0.5
+    #
+    #             # print(value)
+    #             self.slope_mods = self.slope_mods.at[0].set(value)
+    #             self.needs_update = True
+    def reactive_update(self):
+        if self.reactive:
+            time = self.time
+            if time - self.last_time > self.update_period:
+                self.last_time = time
+
+                # Smooth, pseudo-chaotic looping
+                a, b = 2.0, 3.1
+                value = np.sin(a * time + np.sin(b * time))  # in [-1, 1]
+
+                print(value)
+                # self.weights = self.weights.at[7, 9].set(value)
+                self.slope_mods = self.slope_mods.at[0].set(value)
+                self.needs_update = True
+
+
+
+    def update(self, res=None):
+        if res is None:
+            res = self.default_res
+        if res != self.default_res:
+            self.update_cam(res)
+
+        coord_x, coord_y = self.coords[res]
+
+        # t0 = time.time()
+        state = {
+            'weights': self.weights,
+            'adj_matrix': self.adj_matrix,
+            'input_function_ids': jnp.array(self.input_function_ids),
+            'input_zooms': self.input_zooms,
+            'input_biases': self.input_biases,
+            'node_active': self.node_active,
+            'biases': self.biases,
+            'slopes': self.slopes,
+            'slope_mods': self.slope_mods,
+            'activation_ids': self.activation_ids,
+            'output_biases': self.output_biases,
+            'output_slopes': self.output_slopes,
+            'output_slope_mods': self.output_slope_mods,
+            'output_modes': self.output_modes,
+            'cam_img': self.cam_img,
+        }
+        self.current_image = self.jitted_process_network(coord_x, coord_y, state, self.cyclic_start)
+        self.needs_update = False
+        return self.current_image
+
     def _init_jitted_functions(self):
         n_inputs = self.n_inputs
         n_hidden = self.n_hidden
@@ -80,30 +194,63 @@ class CPPN:
         n_nodes = self.n_nodes
         activations = self.activations
 
+        def define_basis_fn():
+            return lambda fn_id, x, y: lax.switch(fn_id, self.input_functions, x, y)
+
+        basis_fn = define_basis_fn()
+
         @jit
-        def process_inputs(basis, state):
-            def process_one(i):
-                val = basis[state['function_ids'][i]]
-                val = (val / state['zooms'][i]) + state['biases_input'][i]
-                val = jnp.where(state['inversions'][i], -val, val)
+        def process_inputs(state, x, y, cam_img):
+            def compute_input(i):
+                general_zoom_x = state['input_zooms'][0]
+                general_zoom_y = state['input_zooms'][1]
+                general_bias_x = state['input_biases'][0]
+                general_bias_y = state['input_biases'][1]
+
+                zoom = state['input_zooms'][i]
+                bias = state['input_biases'][i]
+                f_id = state['input_function_ids'][i]
+
+                def coords_base_only(_):
+                    x_i = x / general_zoom_x + general_bias_x
+                    y_i = y / general_zoom_y + general_bias_y
+                    return x_i, y_i
+
+                def coords_with_input(_):
+                    x_i = x / zoom / general_zoom_x + bias + general_bias_x
+                    y_i = y / zoom / general_zoom_y + bias + general_bias_y
+                    return x_i, y_i
+
+                x_i, y_i = lax.cond(
+                    jnp.logical_or(i == 0, i == 1),
+                    coords_base_only,
+                    coords_with_input,
+                    operand=None
+                )
+
+                val = lax.cond(
+                    f_id == -1,
+                    lambda _: cam_img,  # match output shape of val
+                    lambda _: basis_fn(f_id, x_i, y_i),
+                    operand=None
+                )
                 return val * state['node_active'][i]
 
-            inputs = jnp.stack([process_one(i) for i in range(n_inputs)])
-            return inputs.reshape(n_inputs, -1)
+            return jnp.stack([compute_input(i) for i in range(n_inputs)]).reshape(n_inputs, -1)
 
         @jit
         def apply_activation(x, activation_id):
             return lax.switch(activation_id, activations, x)
 
         @jit
-        def process_hidden_node(weights, x, bias, slope, activation_id, active_flag):
+        def process_hidden_node(weights, x, bias, slope, slope_mod, activation_id, active_flag):
             net = jnp.dot(weights, x)
-            return apply_activation((net + bias) * slope, activation_id) * active_flag
+            return apply_activation((net + bias) * (slope + slope_mod), activation_id) * active_flag
 
         @jit
-        def process_output_node(weights, x, bias, slope):
+        def process_output_node(weights, x, bias, slope, slope_mod):
             net = jnp.dot(weights, x)
-            return (net + bias) * slope
+            return (net + bias) * (slope + slope_mod)
 
         @jit
         def hsl_to_rgb(h, s, l):
@@ -115,9 +262,9 @@ class CPPN:
             return jnp.stack([f(0.0), f(2.0), f(4.0)], axis=0)
 
         @jit
-        def run_network(basis, state, cyclic_start):
+        def run_network(coord_x, coord_y, state, cyclic_start):
             weights = state['weights'] * state['adj_matrix']
-            inputs_flat = process_inputs(basis, state)
+            inputs_flat = process_inputs(state, coord_x, coord_y, state['cam_img'])
 
             x = jnp.zeros((n_nodes, inputs_flat.shape[1]))
             x = x.at[:n_inputs].set(inputs_flat)
@@ -127,20 +274,22 @@ class CPPN:
                 end = n_inputs + n_hidden
 
                 def hidden_loop(i, x):
+                    hidden_idx = i - n_inputs
                     return x.at[i].set(
                         process_hidden_node(
                             weights[:, i],
                             x,
-                            state['biases'][i],
-                            state['slopes'][i],
-                            state['activation_ids'][i],
+                            state['biases'][hidden_idx],
+                            state['slopes'][hidden_idx],
+                            state['slope_mods'][hidden_idx],
+                            state['activation_ids'][hidden_idx],
                             state['node_active'][i]
                         )
                     )
 
                 return lax.fori_loop(start, end, hidden_loop, x)
 
-            x = lax.fori_loop(0, 2, hidden_cycle, x)
+            x = lax.fori_loop(0, self.n_cycles, hidden_cycle, x)
 
             def output_loop(i, outputs):
                 idx = n_inputs + n_hidden + i
@@ -148,7 +297,8 @@ class CPPN:
                     weights[:, idx],
                     x,
                     state['output_biases'][i],
-                    state['output_slopes'][i]
+                    state['output_slopes'][i],
+                    state['output_slope_mods'][i]
                 )
                 return outputs.at[i].set(val)
 
@@ -162,137 +312,119 @@ class CPPN:
                 operand=None
             )
 
-            H, W = basis.shape[1], basis.shape[2]
+            H, W = coord_x.shape[0], coord_x.shape[1]
             return out.reshape(3, H, W).transpose(1, 2, 0)
 
         self.jitted_process_network = run_network
 
-    def update(self, res=None):
-        if res is None:
-            res = self.default_res
+    def sample_network(self):
+        while True:
+            np_adj_matrix = self.sample_adj_matrix()
+            G = nx.DiGraph(np_adj_matrix)
 
-        t0 = time.time()
-        state = {
-            'weights': self.weights,
-            'adj_matrix': self.adj_matrix,
-            'function_ids': jnp.array(self.input_function_ids),
-            'zooms': self.input_zooms,
-            'biases_input': self.input_biases,
-            'inversions': self.input_inverted,
-            'node_active': self.node_active,
-            'biases': self.biases,
-            'slopes': self.slopes,
-            'activation_ids': self.activation_ids,
-            'output_biases': self.output_biases,
-            'output_slopes': self.output_slopes,
-            'output_modes': self.output_modes,
-        }
+            # Ensure at least one input→output path
+            if not any(nx.has_path(G, i, o) for i in self.input_ids for o in self.output_ids):
+                continue
 
-        self.current_image = self.jitted_process_network(
-            self.input_maps[res],
-            state,
-            self.cyclic_start
-        )
+            # Ensure every hidden node lies on some input→hidden→output path
+            all_hidden_connected = True
+            for h in self.middle_ids:
+                if not any(nx.has_path(G, i, h) for i in self.input_ids):
+                    all_hidden_connected = False
+                    break
+                if not any(nx.has_path(G, h, o) for o in self.output_ids):
+                    all_hidden_connected = False
+                    break
 
+            if all_hidden_connected:
+                break
 
-
-        self.needs_update = False
-
-        # if self.debug:
-        #     print(f"[CPPN] Updated at res={res} in {time.time() - t0:.3f}s")
-
-        return self.current_image
-
-    def validate_graph(self):
-        """
-        - Updates self.cyclic_start based on current adj_matrix
-        - Returns True if there is at least one input→output path, False otherwise
-        """
+        # Reorder nodes: inputs first, then acyclic hidden nodes, then cyclic hidden nodes, then outputs
         ordered = list(self.input_ids)
         available = set(self.middle_ids)
 
         while available:
             added = False
             for node in sorted(available):
-                inputs = np.where(self.adj_matrix[:, node])[0]
-                if all(i in ordered for i in inputs):
+                sources = np.where(np_adj_matrix[:, node])[0]
+                if all(s in ordered for s in sources):
                     ordered.append(node)
                     available.remove(node)
                     added = True
                     break
             if not added:
-                break
+                break  # cycle detected
 
-        self.cyclic_start = len(ordered)
+        cyclic_start = len(ordered)
+        ordered.extend(sorted(available))  # cyclic hidden nodes
+        ordered.extend(self.output_ids)
 
-        # Check input→output path
-        G = nx.DiGraph(self.adj_matrix)
-        for inp in self.input_ids:
-            for out in self.output_ids:
-                if nx.has_path(G, inp, out):
-                    return True
+        # Apply node reordering to adj matrix
+        reordered_adj = np.zeros_like(np_adj_matrix)
+        for i, old_i in enumerate(ordered):
+            for j, old_j in enumerate(ordered):
+                reordered_adj[i, j] = np_adj_matrix[old_i, old_j]
 
-        return False
-
-    def sample_network(self):
-
-        while True:
-            self.sample_adj_matrix()
-            G = nx.Graph(self.np_adj_matrix)
-            path_found = any(
-                nx.has_path(G, inp, out)
-                for inp in self.input_ids
-                for out in self.output_ids
-            )
-            if path_found:
-                break
-
+        # Finalize
         key = random.PRNGKey(int(time.time()))
-
-        self.weights = (random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * self.np_adj_matrix
+        self.weights = (random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * reordered_adj
         self.activation_ids = jnp.array(np.random.randint(0, len(self.activations), size=self.n_hidden), dtype=jnp.int32)
-
+        self.adj_matrix = jnp.array(reordered_adj)
+        self.cyclic_start = cyclic_start
         self.needs_update = True
         print(f"[CPPN] Sampled new network with cyclic start at {self.cyclic_start}")
 
     def sample_adj_matrix(self):
-        """Sample and reorder adjacency matrix for optimal computation order"""
-        self.adj_matrix = np.zeros((self.n_nodes, self.n_nodes))
-        for i in range(self.n_inputs + self.n_hidden):
+        adj = np.zeros((self.n_nodes, self.n_nodes))
+        for i in range(self.n_inputs + self.n_hidden):  # no output→anything
             for j in range(self.n_inputs, self.n_nodes):
-                prob = 0.5 if j > i else 0.1
+                if i in self.input_ids and j in self.output_ids:
+                    continue
+                # Allow cycles: no j > i restriction
+                prob = 0.4 if j >= self.n_inputs + self.n_hidden else 0.2  # prioritize middle→output
                 if np.random.rand() < prob:
-                    self.adj_matrix[i, j] = 1
+                    adj[i, j] = 1
+        return adj
 
-        # Compute optimal ordering for hidden nodes
-        ordered_nodes = list(range(self.n_inputs))
-        available_nodes = set(range(self.n_inputs, self.n_inputs + self.n_hidden))
-        while available_nodes:
-            found_one = False
-            for node in available_nodes:
-                input_nodes = set(np.where(self.adj_matrix[:, node])[0])
-                if input_nodes.issubset(set(ordered_nodes)):
-                    ordered_nodes.append(node)
-                    available_nodes.remove(node)
-                    found_one = True
-                    break
-            if not found_one:
-                self.cyclic_start = len(ordered_nodes)
-                ordered_nodes.extend(sorted(available_nodes))
-                break
 
-        ordered_nodes.extend(range(self.n_inputs + self.n_hidden, self.n_nodes))
+    def save_state(self):
+        timestamp = self.timestamp
+        pkl_path = f"{self.output_path}/state_{timestamp}.pkl"
+        img_path = f"{self.output_path}/image_{timestamp}.png"
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(self.state, f)
+        img = self.update(res=2048)
+        display_image = np.array((img * 255).astype(jnp.uint8))
+        print(f'Checkpoints saved at {img_path}')
+        im = Image.fromarray(display_image)
+        im.save(img_path)
+        return img
 
-        # Reorder adjacency matrix
-        reordered_adj = np.zeros_like(self.adj_matrix)
-        for i, old_i in enumerate(ordered_nodes):
-            for j, old_j in enumerate(ordered_nodes):
-                reordered_adj[i, j] = self.adj_matrix[old_i, old_j]
+    @property
+    def timestamp(self):
+        return time.strftime("%Y_%m_%d_%H%M%S")
 
-        self.adj_matrix = jnp.array(reordered_adj)
-        self.np_adj_matrix = reordered_adj
-        self.node_order = ordered_nodes
-        print(f"[CPPN] Cyclic dependencies start at node {self.cyclic_start}")
+    @property
+    def state(self):
+        keys = ['adj_matrix', 'biases', 'slopes', 'slope_mods', 'weights', 'activation_ids', 'output_slopes', 'output_slope_mods', 'output_biases', 'output_modes',
+                'input_function_ids', 'input_zooms', 'input_biases', 'node_active', 'cv_override',
+                'inputs_nodes_record', 'cyclic_start']
+        state = {}
+        for key in keys:
+            state[key] = self.__dict__[key]
+        return state
+
+    def set_state(self, state=None, state_path=None):
+        assert state != None or state_path != None
+        if state is None:
+            with open(state_path, "rb") as f:
+                state = pickle.load(f)
+        for key, val in state.items():
+            self.__dict__[key] = val
+
+    @property
+    def time(self):
+        return time.time() - self.t_start
 
 
 if __name__ == '__main__':
