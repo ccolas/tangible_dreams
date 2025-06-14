@@ -1,7 +1,7 @@
 import rtmidi
 import asyncio
 
-from src.cppn import CPPN
+from src.cppn import CPPN, zoom_mapping, bias_mapping
 
 
 class MIDIController:
@@ -64,26 +64,32 @@ class MIDIController:
         if self.cppn.set_pressed:
             # Alternative controls when SET is pressed
             if control == 224:  # First slider for zoom
-                value = 0.01 * (10000) ** (value / 127)  # use exponential mapping
-                self.cppn.input_zooms = self.cppn.input_zooms.at[0].set(value)
-                self.cppn.input_zooms = self.cppn.input_zooms.at[1].set(value)
-                # self.cppn.input_zooms = self.cppn.input_zooms.at[2].set(value)
-                # self.cppn.input_zooms = self.cppn.input_zooms.at[1].set(value)
+                value = value / 127 * 1023
+                # value = 0.01 * (10000) ** (value / 127)  # use exponential mapping
+                self.cppn.input_params1 = self.cppn.input_params1.at[0].set(value)
+                self.cppn.input_params1 = self.cppn.input_params1.at[1].set(value)
+                # self.cppn.input_params1 = self.cppn.input_params1.at[2].set(value)
+                # self.cppn.input_params1 = self.cppn.input_params1.at[1].set(value)
                 print(f'Setting zoom to {value}')
             elif 225 <= control <= 226:  # First 2 knobs for panning
-                value = 3 * (value / 64 - 1)  # Map to [-3, 3]
+                # value = 3 * (value / 64 - 1)  # Map to [-3, 3]
+                value = value / 127 * 1023
                 if control == 225:
-                    self.cppn.input_biases = self.cppn.input_biases.at[0].set(value)
+                    self.cppn.input_params2 = self.cppn.input_params2.at[0].set(value)
                     print(f'Setting x offset to {value}')
                 elif control == 226:
-                    self.cppn.input_biases = self.cppn.input_biases.at[1].set(value)
+                    self.cppn.input_params2 = self.cppn.input_params2.at[1].set(value)
                     print(f'Setting y offset to {value}')
             elif control == 227:
-                value = 0.01 * (10000) ** (value / 127)  # use exponential mapping
-                self.cppn.input_zooms = self.cppn.input_zooms.at[2].set(value)
+                value = value / 127 * 1023
+                # value = 0.01 * (10000) ** (value / 127)  # use exponential mapping
+                self.cppn.input_params1 = self.cppn.input_params1.at[2].set(value)
+                print(f'Setting input 2 param 1 to {value}')
             elif control == 228:
-                value = 3 * (value / 64 - 1)  # Map to [-3, 3]
-                self.cppn.input_biases = self.cppn.input_biases.at[2].set(value)
+                value = value / 127 * 1023
+                # value = 3 * (value / 64 - 1)  # Map to [-3, 3]
+                self.cppn.input_params2 = self.cppn.input_params2.at[2].set(value)
+                print(f'Setting input 2 param 2 to {value}')
 
             elif 229 <= control <= 231:  # Last three sliders for RGB slopes
                 slope_idx = control - 229

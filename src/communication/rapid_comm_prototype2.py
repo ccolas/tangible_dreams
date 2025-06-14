@@ -12,9 +12,10 @@ TIMEOUT = 0.004  # 4ms
 TIMEOUT_TOTAL = 0.0055
 MAX_RETRIES = 3
 RUNS = 3000000
-NODES = range(1,20)
-NODES_TO_PLOT = [1, 7, 17]
+NODES = [7]
+NODES_TO_PLOT = [7]
 
+# dmesg | grep tty
 def ensure_low_latency(port_path):
     try:
         device = os.path.basename(port_path)

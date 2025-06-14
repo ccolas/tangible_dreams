@@ -2,7 +2,7 @@ import asyncio
 import os
 
 from src.midi import MIDIController
-from src.rs845 import RS485Controller
+from src.rs485 import RS485Controller
 from src.viz import create_backend
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
@@ -24,14 +24,14 @@ os.makedirs(output_path, exist_ok=True)
 DEBUG = True
 RES = 1024
 FACTOR = 16/9
-CONTROLLER = 'midi'
+CONTROLLER = 'rs485'
 
 async def main():
     params = dict(debug=DEBUG, res=RES, factor=FACTOR)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
     if CONTROLLER == 'midi':
         controller = MIDIController(output_path, params)
         asyncio.create_task(controller.start_polling_loop())  # async MIDI polling
-    elif CONTROLLER == 'rs845':
+    elif CONTROLLER == 'rs485':
         controller = RS485Controller(output_path, params)
         asyncio.create_task(controller.start_polling_loop())  # run in background
     else:

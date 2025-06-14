@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 
 from viz import create_backend
-from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions
+from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, zoom_mapping, bias_mapping
 
 class CPPN:
     def __init__(self, output_path, params):
@@ -48,6 +48,7 @@ class CPPN:
         self.slopes = jnp.ones(self.n_hidden)
         self.slope_mods = jnp.zeros(self.n_hidden)
         self.weights = jnp.zeros((self.n_nodes, self.n_nodes))
+        self.weight_mods = jnp.zeros((self.n_nodes, self.n_nodes))
         self.activation_ids = jnp.zeros(self.n_hidden, dtype=int)
 
         # Output transformation (RGB or HSL mode)
@@ -57,9 +58,9 @@ class CPPN:
         self.output_modes = jnp.zeros(3, dtype=int)  # 0=sigmoid RGB, 1=clipped HSL
 
         # Input configuration (for inputs 1–6)
-        self.input_function_ids = jnp.array([0, 1, 2, 3, 5, 4])  # Index into input basis functions
-        self.input_zooms = jnp.ones(self.n_inputs)  # Per-input zoom
-        self.input_biases = jnp.zeros(self.n_inputs)  # Per-input bias
+        self.input_function_ids = jnp.array([0, 1, 2, 3, 4, 5])  # Index into input basis functions
+        self.input_params1 = jnp.full(self.n_inputs, 512)  # zoom → default 1
+        self.input_params2 = jnp.full(self.n_inputs, 512)  # bias → default 0
         # self.input_inverted = jnp.zeros(self.n_inputs, dtype=int)  # Per-input invertion
 
         # Node masking
@@ -68,7 +69,8 @@ class CPPN:
         self.inputs_nodes_record = np.full((self.n_nodes, 3), -1, dtype=int)  # track what gets connected on inputs
 
         # Activations
-        self.activations = activation_fns
+        self.activations = list(activation_fns.values())
+        self.activations_names = list(activation_fns.keys())
 
         # Precomputed coordinate grids
         self.input_functions = input_functions
@@ -168,10 +170,11 @@ class CPPN:
         # t0 = time.time()
         state = {
             'weights': self.weights,
+            'weight_mods': self.weight_mods,
             'adj_matrix': self.adj_matrix,
             'input_function_ids': jnp.array(self.input_function_ids),
-            'input_zooms': self.input_zooms,
-            'input_biases': self.input_biases,
+            'input_params1': self.input_params1,
+            'input_params2': self.input_params2,
             'node_active': self.node_active,
             'biases': self.biases,
             'slopes': self.slopes,
@@ -182,6 +185,7 @@ class CPPN:
             'output_slope_mods': self.output_slope_mods,
             'output_modes': self.output_modes,
             'cam_img': self.cam_img,
+            'cv_override': self.cv_override,
         }
         self.current_image = self.jitted_process_network(coord_x, coord_y, state, self.cyclic_start)
         self.needs_update = False
@@ -195,43 +199,33 @@ class CPPN:
         activations = self.activations
 
         def define_basis_fn():
-            return lambda fn_id, x, y: lax.switch(fn_id, self.input_functions, x, y)
+            return lambda fn_id, x, y, p1, p2: lax.switch(fn_id, self.input_functions, x, y, p1, p2)
 
         basis_fn = define_basis_fn()
 
         @jit
         def process_inputs(state, x, y, cam_img):
             def compute_input(i):
-                general_zoom_x = state['input_zooms'][0]
-                general_zoom_y = state['input_zooms'][1]
-                general_bias_x = state['input_biases'][0]
-                general_bias_y = state['input_biases'][1]
+                general_zoom_x = zoom_mapping(state['input_params1'][0])  # remap values
+                general_zoom_y = zoom_mapping(state['input_params1'][1])
+                general_bias_x = bias_mapping(state['input_params2'][0])
+                general_bias_y = bias_mapping(state['input_params2'][1])
 
-                zoom = state['input_zooms'][i]
-                bias = state['input_biases'][i]
+                p1 = state['input_params1'][i]  # in 0-1023
+                p2 = state['input_params2'][i]  # in 0-1023
                 f_id = state['input_function_ids'][i]
 
-                def coords_base_only(_):
-                    x_i = x / general_zoom_x + general_bias_x
-                    y_i = y / general_zoom_y + general_bias_y
+                def coords_(x, y):
+                    x_i = (x + general_bias_x) / general_zoom_x
+                    y_i = (y + general_bias_y) / general_zoom_y
                     return x_i, y_i
 
-                def coords_with_input(_):
-                    x_i = x / zoom / general_zoom_x + bias + general_bias_x
-                    y_i = y / zoom / general_zoom_y + bias + general_bias_y
-                    return x_i, y_i
-
-                x_i, y_i = lax.cond(
-                    jnp.logical_or(i == 0, i == 1),
-                    coords_base_only,
-                    coords_with_input,
-                    operand=None
-                )
+                x_i, y_i = coords_(x, y)
 
                 val = lax.cond(
                     f_id == -1,
                     lambda _: cam_img,  # match output shape of val
-                    lambda _: basis_fn(f_id, x_i, y_i),
+                    lambda _: basis_fn(f_id, x_i, y_i, p1, p2),
                     operand=None
                 )
                 return val * state['node_active'][i]
@@ -264,6 +258,14 @@ class CPPN:
         @jit
         def run_network(coord_x, coord_y, state, cyclic_start):
             weights = state['weights'] * state['adj_matrix']
+
+
+            # add weight modulation for cv override
+            cv_override = state['cv_override']
+            weights_mods = state['weight_mods'] * state['adj_matrix']
+            mask = jnp.expand_dims(cv_override, axis=0)  # shape (1, n_nodes)
+            weights = weights + weights_mods * mask
+
             inputs_flat = process_inputs(state, coord_x, coord_y, state['cam_img'])
 
             x = jnp.zeros((n_nodes, inputs_flat.shape[1]))
@@ -323,7 +325,7 @@ class CPPN:
             G = nx.DiGraph(np_adj_matrix)
 
             # Ensure at least one input→output path
-            if not any(nx.has_path(G, i, o) for i in self.input_ids for o in self.output_ids):
+            if not any(nx.has_path(G, i, o) for i in self.input_ids[2:] for o in self.output_ids):
                 continue
 
             # Ensure every hidden node lies on some input→hidden→output path
@@ -378,6 +380,8 @@ class CPPN:
         adj = np.zeros((self.n_nodes, self.n_nodes))
         for i in range(self.n_inputs + self.n_hidden):  # no output→anything
             for j in range(self.n_inputs, self.n_nodes):
+                if i == 0 or i == 1:
+                    continue
                 if i in self.input_ids and j in self.output_ids:
                     continue
                 # Allow cycles: no j > i restriction
@@ -407,7 +411,7 @@ class CPPN:
     @property
     def state(self):
         keys = ['adj_matrix', 'biases', 'slopes', 'slope_mods', 'weights', 'activation_ids', 'output_slopes', 'output_slope_mods', 'output_biases', 'output_modes',
-                'input_function_ids', 'input_zooms', 'input_biases', 'node_active', 'cv_override',
+                'input_function_ids', 'input_params1', 'input_params2', 'node_active', 'cv_override',
                 'inputs_nodes_record', 'cyclic_start']
         state = {}
         for key in keys:
