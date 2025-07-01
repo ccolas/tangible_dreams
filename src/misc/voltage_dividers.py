@@ -1,25 +1,55 @@
 import numpy as np
 
-pull_down = 47000
+pull_down_1 = 510000  # 1 jack connected
+pull_down_3 = pull_down_1 / 3  # 3 jacks connected in parallel
 pull_up = 10000
-# resistances = np.array([1000, 1500, 2000, 3000, 4700, 5600, 7500, 8200, 10000, 15000, 22000, 33000, 47000, 68000, 100000])
-resistances = np.array([1000, 1500, 2000, 3000, 4700, 5600, 7500, 10000, 15000, 22000, 33000, 47000, 68000, 150000, 680000])
+r_safety = 1000  # corrected value
 
-r_eqs = 1 / (1 / resistances + 1/ pull_down)
-voltages = r_eqs / (r_eqs + pull_up) * 5
-voltages = voltages * (47 / 48)  # accounting for the voltage dividers between the 47 pull down on load side and the 1k safety
-steps = (voltages / 5 * 1023).astype(int)
-steps_diffs = np.diff(np.concatenate([np.zeros(1), steps]))
-thresholds = (steps - steps_diffs // 2).astype(int)
-voltage_diffs = np.diff(np.concatenate([np.zeros(1), voltages]))
+resistances = np.array([510,
+    1000, 1500, 2000, 3000, 4700, 5600, 7500,
+    10000, 15000, 22000, 33000, 56000, 150000
+])
 
-for i in range(len(voltages)):
-    print(f'Node {i + 1}: '
-          f'res={resistances[i]}, '
-          f'V={voltages[i]:.3f}V, '
-          f'step={steps[i]}, '
-          # f'diff V: {voltage_diffs[i]:.3f}V, '
-          f'diff steps: {int(voltage_diffs[i] / 5 * 1024)}, '
-          f'thresholds: {thresholds[i]}')
+# Compute voltages for 1 jack connected
+r_eqs_1 = 1 / (1 / resistances + 1 / pull_down_1)
+v_divider_1 = r_eqs_1 / (r_eqs_1 + pull_up) * 5
+voltages_1 = v_divider_1 * (pull_down_1 / (pull_down_1 + r_safety))
 
-print(''.join([str(val) + ", " for val in thresholds])[:-2])
+# Compute voltages for 3 jacks connected
+r_eqs_3 = 1 / (1 / resistances + 1 / pull_down_3)
+v_divider_3 = r_eqs_3 / (r_eqs_3 + pull_up) * 5
+voltages_3 = v_divider_3 * (pull_down_3 / (pull_down_3 + r_safety))
+
+# Convert to ADC steps
+steps_1 = (voltages_1 / 5 * 1023).astype(int)
+steps_3 = (voltages_3 / 5 * 1023).astype(int)
+
+# Compute margins and thresholds between adjacent levels
+step_margins = []
+thresholds = []
+
+for i in range(len(resistances)):
+    if i == 0:
+        margin = steps_3[i]
+        threshold = steps_3[i] // 2
+    else:
+        margin = steps_3[i] - steps_1[i - 1]
+        threshold = (steps_1[i - 1] + steps_3[i]) // 2
+    step_margins.append(margin)
+    thresholds.append(threshold)
+
+# Print results
+for i in range(len(resistances)):
+    margin_str = f" | margin from prev: {step_margins[i]}"
+    threshold_str = f" | threshold: {thresholds[i]}"
+    print(f'Node {i + 1:2}: '
+          f'res={resistances[i]:>6}, '
+          f'V_1jack={voltages_1[i]:.3f}V, '
+          f'V_3jack={voltages_3[i]:.3f}V, '
+          f'step_1jack={steps_1[i]}, '
+          f'step_3jack={steps_3[i]}'
+          f'{margin_str}{threshold_str}')
+
+# Thresholds summary
+print('\nThresholds array:')
+print(', '.join(str(val) for val in thresholds))
