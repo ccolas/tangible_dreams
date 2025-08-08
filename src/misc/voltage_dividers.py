@@ -53,3 +53,20 @@ for i in range(len(resistances)):
 # Thresholds summary
 print('\nThresholds array:')
 print(', '.join(str(val) for val in thresholds))
+
+
+# /mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/src/misc/voltage_dividers.py
+# Node  1: res=   510, V_1jack=0.242V, V_3jack=0.241V, step_1jack=49, step_3jack=49 | margin from prev: 49 | threshold: 24
+# Node  2: res=  1000, V_1jack=0.453V, V_3jack=0.449V, step_1jack=92, step_3jack=91 | margin from prev: 42 | threshold: 70
+# Node  3: res=  1500, V_1jack=0.649V, V_3jack=0.643V, step_1jack=132, step_3jack=131 | margin from prev: 39 | threshold: 111
+# Node  4: res=  2000, V_1jack=0.829V, V_3jack=0.820V, step_1jack=169, step_3jack=167 | margin from prev: 35 | threshold: 149
+# Node  5: res=  3000, V_1jack=1.146V, V_3jack=1.132V, step_1jack=234, step_3jack=231 | margin from prev: 62 | threshold: 200
+# Node  6: res=  4700, V_1jack=1.586V, V_3jack=1.560V, step_1jack=324, step_3jack=319 | margin from prev: 85 | threshold: 276
+# Node  7: res=  5600, V_1jack=1.779V, V_3jack=1.747V, step_1jack=363, step_3jack=357 | margin from prev: 33 | threshold: 340
+# Node  8: res=  7500, V_1jack=2.121V, V_3jack=2.078V, step_1jack=433, step_3jack=425 | margin from prev: 62 | threshold: 394
+# Node  9: res= 10000, V_1jack=2.471V, V_3jack=2.414V, step_1jack=505, step_3jack=493 | margin from prev: 60 | threshold: 463
+# Node 10: res= 15000, V_1jack=2.959V, V_3jack=2.881V, step_1jack=605, step_3jack=589 | margin from prev: 84 | threshold: 547
+# Node 11: res= 22000, V_1jack=3.385V, V_3jack=3.285V, step_1jack=692, step_3jack=672 | margin from prev: 67 | threshold: 638
+# Node 12: res= 33000, V_1jack=3.773V, V_3jack=3.650V, step_1jack=771, step_3jack=746 | margin from prev: 54 | threshold: 719
+# Node 13: res= 56000, V_1jack=4.165V, V_3jack=4.017V, step_1jack=852, step_3jack=821 | margin from prev: 50 | threshold: 796
+# Node 14: res=150000, V_1jack=4.594V, V_3jack=4.417V, step_1jack=939, step_3jack=903 | margin from prev: 51 | threshold: 877

@@ -12,8 +12,8 @@ TIMEOUT = 0.004  # 4ms
 TIMEOUT_TOTAL = 0.0055
 MAX_RETRIES = 3
 RUNS = 3000000
-NODES = [7]
-NODES_TO_PLOT = [7]
+NODES = [17]
+NODES_TO_PLOT = NODES
 
 # dmesg | grep tty
 def ensure_low_latency(port_path):
@@ -125,6 +125,7 @@ def poll_single_node(ser, node_id, command=0x00):
 
 # === POLL ALL NODES ===
 def poll_nodes():
+    PARSED_ONCE = False
     with serial.Serial(PORT, BAUD, timeout=TIMEOUT) as ser:
         time.sleep(1)
 
@@ -133,7 +134,7 @@ def poll_nodes():
             node_data = {}
             missed_nodes = []
             timings = defaultdict(float)
-            command = 0x01 if run == 1 else 0x00
+            command = 0x01 if (run == 1 or not PARSED_ONCE) else 0x00
 
             for node_id in NODES:
                 t_start = time.time()
@@ -144,6 +145,7 @@ def poll_nodes():
                     parsed = parse_node_response(buffer)
                     if parsed:
                         node_data[node_id] = parsed[1]
+                        PARSED_ONCE = True
                     else:
                         missed_nodes.append(node_id)
                         print(f"[FAIL] Node {node_id}: Failed to parse → {buffer.hex()}")
