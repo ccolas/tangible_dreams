@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // -------- Node id
-#define NODE_ID 1
+#define NODE_ID 3
 
 // -------- Pin mapping (hardware)
 #define SOURCE_KNOB   A3   // maps to protocol pinIndex 3 (activation choice)
@@ -46,6 +46,8 @@ int idxForPin(uint8_t pinIndex) {
   return -1;
 }
 
+static uint32_t lastSample = 0; // for on/off led update
+
 void setup() {
   pinMode(RS485_DE, OUTPUT);
   pinMode(ON_OFF_SWITCH, INPUT_PULLUP);  // active-low switch
@@ -77,11 +79,16 @@ void readInputs() {
   uint16_t onOff = (digitalRead(ON_OFF_SWITCH) == LOW) ? 1 : 0;
   newValues[idxForPin(8)] = onOff;
 
-  // LED mirrors on/off state
-  digitalWrite(ON_OFF_LED, onOff ? HIGH : LOW);
 }
 
 void loop() {
+  // activate on/off led
+  if (millis() - lastSample >= 5) {
+    lastSample = millis();
+    uint8_t onOffNow = (digitalRead(ON_OFF_SWITCH) == LOW) ? HIGH : LOW;
+    digitalWrite(ON_OFF_LED, onOffNow);
+  }
+
   // Expect: 0xCC, nodeId, command
   if (bus.available() < 3) return;
   if (bus.read() != 0xCC)  return;

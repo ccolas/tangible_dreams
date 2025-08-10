@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // --- Node id
-#define NODE_ID 17
+#define NODE_ID 16
 
 // --- Pin mapping (hardware)
 #define AIN0          A0   // -> proto 0 (binned)
@@ -57,6 +57,8 @@ int idxForPin(uint8_t p){
   return -1;
 }
 
+static uint32_t lastSample = 0; // for on/off led update
+
 
 void setup(){
   pinMode(RS485_DE, OUTPUT);
@@ -99,11 +101,18 @@ void readInputs(){
   newValues[idxForPin(9)] = cvState;
 
   // LEDs
-  digitalWrite(ON_OFF_LED, onOff ? HIGH : LOW);
   digitalWrite(CV_LED, cvState ? HIGH : LOW);
 }
 
 void loop(){
+
+  // activate on/off led
+  if (millis() - lastSample >= 5) {
+    lastSample = millis();
+    uint8_t onOffNow = (digitalRead(ON_OFF_SWITCH) == LOW) ? HIGH : LOW;
+    digitalWrite(ON_OFF_LED, onOffNow);
+  }
+
   if(bus.available() < 3) return;
   if(bus.read() != 0xCC) return;
 
