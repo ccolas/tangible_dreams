@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // --- Node id
-#define NODE_ID 8
+#define NODE_ID 7
 
 // --- Pin mapping (hardware)
 #define AIN0          A0   // -> proto 0 (binned)
@@ -78,6 +78,13 @@ void setup(){
   delay(100);
 
   for(uint8_t i=0;i<ACTIVE_COUNT;i++) lastValues[i]=0xFFFF;
+  DIDR0 |= _BV(ADC0D)|_BV(ADC1D)|_BV(ADC2D)|_BV(ADC3D)|_BV(ADC4D)|_BV(ADC5D);
+}
+
+int readStable(uint8_t pin){
+  analogRead(pin);                 // 1st throwaway
+  int v = analogRead(pin);         // candidate
+  return v;
 }
 
 void readInputs(){
@@ -85,9 +92,6 @@ void readInputs(){
   // clear buffer first?
   analogRead(AIN0);
   delayMicroseconds(10);            // try 10 µs; raise if needed
-  newValues[idxForPin(0)] = mapToCustomBins(analogRead(AIN0), thresholdNodeIds, NUM_THRESHOLDS);
-  newValues[idxForPin(1)] = mapToCustomBins(analogRead(AIN1), thresholdNodeIds, NUM_THRESHOLDS);
-  newValues[idxForPin(2)] = mapToCustomBins(analogRead(AIN2), thresholdNodeIds, NUM_THRESHOLDS);
 
   // A3–A6 raw analog (proto 3..6)
   newValues[idxForPin(3)] = analogRead(AIN3);
@@ -107,6 +111,12 @@ void readInputs(){
   if(cvNow && !cvLast) cvState ^= 1;
   cvLast = cvNow;
   newValues[idxForPin(9)] = cvState;
+
+  analogRead(AIN0);
+  delayMicroseconds(10);            // try 10 µs; raise if needed
+  newValues[idxForPin(0)] = mapToCustomBins(readStable(AIN0), thresholdNodeIds, NUM_THRESHOLDS);
+  newValues[idxForPin(1)] = mapToCustomBins(readStable(AIN1), thresholdNodeIds, NUM_THRESHOLDS);
+  newValues[idxForPin(2)] = mapToCustomBins(readStable(AIN2), thresholdNodeIds, NUM_THRESHOLDS);
 
   // LEDs
   digitalWrite(CV_LED, cvState ? HIGH : LOW);

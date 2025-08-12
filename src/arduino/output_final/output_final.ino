@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // --- Node id
-#define NODE_ID 16
+#define NODE_ID 15
 
 // --- Pin mapping (hardware)
 #define AIN0          A0   // -> proto 0 (binned)
@@ -44,7 +44,7 @@ static inline void txBegin(){ digitalWrite(RS485_DE, HIGH); delayMicroseconds(10
 static inline void txEnd(){ bus.flush(); digitalWrite(RS485_DE, LOW); bus.listen(); }
 
 // custom thresholds for A0–A2 binning
-uint16_t thresholdNodeIds[] = {24, 70, 111, 149, 200, 276, 340, 394, 463, 547, 638, 719, 796, 877};
+uint16_t thresholdNodeIds[] = {34, 57, 99, 139, 179, 248, 333, 377, 445, 518, 618, 703, 781, 871};
 #define NUM_THRESHOLDS (sizeof(thresholdNodeIds)/sizeof(thresholdNodeIds[0]))
 
 uint8_t mapToCustomBins(uint16_t v, const uint16_t* th, uint8_t len){
@@ -72,6 +72,13 @@ void setup(){
   delay(100);
 
   for(uint8_t i=0;i<ACTIVE_COUNT;i++) lastValues[i]=0xFFFF;
+  DIDR0 |= _BV(ADC0D)|_BV(ADC1D)|_BV(ADC2D)|_BV(ADC3D)|_BV(ADC4D)|_BV(ADC5D);
+}
+
+int readStable(uint8_t pin){
+  analogRead(pin);                 // 1st throwaway
+  int v = analogRead(pin);         // candidate
+  return v;
 }
 
 void readInputs(){
@@ -79,9 +86,6 @@ void readInputs(){
   // clear buffer first?
   analogRead(AIN0);
   delayMicroseconds(10);            // try 10 µs; raise if needed
-  newValues[idxForPin(0)] = mapToCustomBins(analogRead(AIN0), thresholdNodeIds, NUM_THRESHOLDS);
-  newValues[idxForPin(1)] = mapToCustomBins(analogRead(AIN1), thresholdNodeIds, NUM_THRESHOLDS);
-  newValues[idxForPin(2)] = mapToCustomBins(analogRead(AIN2), thresholdNodeIds, NUM_THRESHOLDS);
 
   // A3–A7 raw analog (proto 3..7)
   newValues[idxForPin(3)] = analogRead(AIN3);
@@ -99,6 +103,13 @@ void readInputs(){
   if(cvNow && !cvLast) cvState ^= 1;
   cvLast = cvNow;
   newValues[idxForPin(9)] = cvState;
+
+  analogRead(AIN0);
+  delayMicroseconds(10);            // try 10 µs; raise if needed
+  
+  newValues[idxForPin(0)] = mapToCustomBins(readStable(AIN0), thresholdNodeIds, NUM_THRESHOLDS);
+  newValues[idxForPin(1)] = mapToCustomBins(readStable(AIN1), thresholdNodeIds, NUM_THRESHOLDS);
+  newValues[idxForPin(2)] = mapToCustomBins(readStable(AIN2), thresholdNodeIds, NUM_THRESHOLDS);
 
   // LEDs
   digitalWrite(CV_LED, cvState ? HIGH : LOW);

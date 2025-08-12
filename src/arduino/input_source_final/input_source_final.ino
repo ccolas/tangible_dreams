@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // -------- Node id
-#define NODE_ID 3
+#define NODE_ID 2
 
 // -------- Pin mapping (hardware)
 #define SOURCE_KNOB   A3   // maps to protocol pinIndex 3 (activation choice)
