@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // --- Node id
-#define NODE_ID 7
+#define NODE_ID 14
 
 // --- Pin mapping (hardware)
 #define AIN0          A0   // -> proto 0 (binned)
@@ -51,7 +51,7 @@ uint8_t mapToChoice(uint16_t v, uint8_t n){
 }
 
 // custom thresholds for A0–A2 binning
-uint16_t thresholdNodeIds[] = {24, 70, 111, 149, 200, 276, 340, 394, 463, 547, 638, 719, 796, 877};
+uint16_t thresholdNodeIds[] = {34, 57, 99, 139, 179, 248, 333, 377, 445, 518, 618, 703, 781, 871};
 #define NUM_THRESHOLDS (sizeof(thresholdNodeIds)/sizeof(thresholdNodeIds[0]))
 
 uint8_t mapToCustomBins(uint16_t v, const uint16_t* th, uint8_t len){
@@ -90,8 +90,8 @@ int readStable(uint8_t pin){
 void readInputs(){
   // A0–A2 -> custom bins (proto 0..2)
   // clear buffer first?
-  analogRead(AIN0);
-  delayMicroseconds(10);            // try 10 µs; raise if needed
+  // analogRead(AIN0);
+  // delayMicroseconds(10);            // try 10 µs; raise if needed
 
   // A3–A6 raw analog (proto 3..6)
   newValues[idxForPin(3)] = analogRead(AIN3);
