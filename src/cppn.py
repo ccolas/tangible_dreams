@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 
 from viz import create_backend
-from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, zoom_mapping, bias_mapping
+from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping
 
 class CPPN:
     def __init__(self, output_path, params):
@@ -61,10 +61,10 @@ class CPPN:
         self.input_function_ids = jnp.array([0, 1, 2, 3, 4, 5])  # Index into input basis functions
         self.input_params1 = jnp.full(self.n_inputs, 512)  # zoom → default 1
         self.input_params2 = jnp.full(self.n_inputs, 512)  # bias → default 0
-        # self.input_inverted = jnp.zeros(self.n_inputs, dtype=int)  # Per-input invertion
+        self.inverted_inputs = jnp.zeros(self.n_inputs)
 
         # Node masking
-        self.node_active = jnp.ones(self.n_inputs + self.n_hidden)
+        self.node_active = jnp.ones(self.n_inputs + self.n_hidden + self.n_outputs)
         self.cv_override = jnp.zeros(self.n_nodes)
         self.inputs_nodes_record = np.full((self.n_nodes, 3), -1, dtype=int)  # track what gets connected on inputs
 
@@ -73,7 +73,8 @@ class CPPN:
         self.activations_names = list(activation_fns.keys())
 
         # Precomputed coordinate grids
-        self.input_functions = input_functions
+        self.input_function_names = input_selector_mapping
+        self.input_functions = [input_functions[name] for name in self.input_function_names]
         self.coords = {self.default_res: build_coordinate_grid(self.default_res, self.factor),
                        self.high_res: build_coordinate_grid(self.high_res, self.factor)}
         self.img_shapes = {self.default_res: self.coords[self.default_res][0].shape,
@@ -101,8 +102,8 @@ class CPPN:
             res = self.default_res
         # TODO: find something better here
         if self.cam_input:
-            time = self.time
-            if time - self.last_time > self.update_period:
+            now = self.time
+            if now - self.last_time > self.update_period:
                 target_shape = self.img_shapes[res]
                 ret, frame = self.cam.read()
                 if not ret:
@@ -124,6 +125,7 @@ class CPPN:
 
                 # self.cam_img = discretized.astype(np.float32)
                 self.needs_update = True
+                self.last_time = now
 
     # def reactive_update(self):
     #     if self.reactive:
@@ -173,6 +175,7 @@ class CPPN:
             'weight_mods': self.weight_mods,
             'adj_matrix': self.adj_matrix,
             'input_function_ids': jnp.array(self.input_function_ids),
+            'inverted_inputs': self.inverted_inputs,
             'input_params1': self.input_params1,
             'input_params2': self.input_params2,
             'node_active': self.node_active,
@@ -214,17 +217,23 @@ class CPPN:
                 p1 = state['input_params1'][i]  # in 0-1023
                 p2 = state['input_params2'][i]  # in 0-1023
                 f_id = state['input_function_ids'][i]
+                inv_flag = (state['inverted_inputs'][i] > 0.5)
 
                 def coords_(x, y):
                     x_i = (x + general_bias_x) / general_zoom_x
                     y_i = (y + general_bias_y) / general_zoom_y
+                    # Only invert the relevant axis for X/Y coordinate inputs
+                    # f_id: 0 = 'x', 1 = 'y'
+                    x_i = lax.select(inv_flag & (f_id == 0), -x_i, x_i)
+                    y_i = lax.select(inv_flag & (f_id == 1), -y_i, y_i)
+
                     return x_i, y_i
 
                 x_i, y_i = coords_(x, y)
 
                 val = lax.cond(
                     f_id == -1,
-                    lambda _: cam_img,  # match output shape of val
+                    lambda _: cam_img,
                     lambda _: basis_fn(f_id, x_i, y_i, p1, p2),
                     operand=None
                 )
@@ -242,9 +251,9 @@ class CPPN:
             return apply_activation((net + bias) * (slope + slope_mod), activation_id) * active_flag
 
         @jit
-        def process_output_node(weights, x, bias, slope, slope_mod):
+        def process_output_node(weights, x, bias, slope, slope_mod, active_flag):
             net = jnp.dot(weights, x)
-            return (net + bias) * (slope + slope_mod)
+            return (net + bias) * (slope + slope_mod) * active_flag
 
         @jit
         def hsl_to_rgb(h, s, l):
@@ -294,18 +303,21 @@ class CPPN:
             x = lax.fori_loop(0, self.n_cycles, hidden_cycle, x)
 
             def output_loop(i, outputs):
-                idx = n_inputs + n_hidden + i
+                output_idx = i - n_inputs - n_hidden
                 val = process_output_node(
-                    weights[:, idx],
+                    weights[:, i],
                     x,
-                    state['output_biases'][i],
-                    state['output_slopes'][i],
-                    state['output_slope_mods'][i]
+                    state['output_biases'][output_idx],
+                    state['output_slopes'][output_idx],
+                    state['output_slope_mods'][output_idx],
+                    state['node_active'][i]
                 )
                 return outputs.at[i].set(val)
 
             outputs = jnp.zeros((n_outputs, inputs_flat.shape[1]))
-            outputs = lax.fori_loop(0, n_outputs, output_loop, outputs)
+            start = n_inputs + n_hidden
+            end = n_inputs + n_hidden + n_outputs
+            outputs = lax.fori_loop(start, end, output_loop, outputs)
 
             out = lax.cond(
                 jnp.any(state['output_modes'] > 0),
@@ -412,7 +424,7 @@ class CPPN:
     def state(self):
         keys = ['adj_matrix', 'biases', 'slopes', 'slope_mods', 'weights', 'activation_ids', 'output_slopes', 'output_slope_mods', 'output_biases', 'output_modes',
                 'input_function_ids', 'input_params1', 'input_params2', 'node_active', 'cv_override',
-                'inputs_nodes_record', 'cyclic_start']
+                'inputs_nodes_record', 'cyclic_start', 'inverted_inputs']
         state = {}
         for key in keys:
             state[key] = self.__dict__[key]

@@ -39,6 +39,7 @@ async def main():
 
     vis = create_backend('pygame')
     vis.initialize(
+        controller=controller,
         render_width=int(RES * FACTOR),
         render_height=RES,
         window_scale=1  # Adjust this to make window bigger/smaller

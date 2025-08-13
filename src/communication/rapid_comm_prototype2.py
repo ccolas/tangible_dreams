@@ -9,10 +9,10 @@ BAUD = 115200
 START_BYTE = 0xAA
 END_BYTE = 0xBB
 TIMEOUT = 0.004  # 4ms
-TIMEOUT_TOTAL = 0.0055
+TIMEOUT_TOTAL = 0.05
 MAX_RETRIES = 3
 RUNS = 3000000
-NODES = [17]
+NODES = [1]#, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 NODES_TO_PLOT = NODES
 
 # dmesg | grep tty
@@ -45,6 +45,7 @@ def parse_node_response(data):
     flag = data[1]
 
     if flag == 0x01:
+        print(f'{node_id}: no change received')
         return node_id, {}
 
     if flag == 0xFF:
@@ -83,7 +84,6 @@ def parse_node_response(data):
 
 
 
-# === POLL A SINGLE NODE ===
 def poll_single_node(ser, node_id, command=0x00):
     attempt = 0
     if command == 0x00:
@@ -120,16 +120,19 @@ def poll_single_node(ser, node_id, command=0x00):
 
         attempt += 1
 
-    print(f"[MISS] Node {node_id}: No valid response")
+    print(f"[MISS] Node {node_id}: No valid response, received: {buffer.hex()}")
     return None
 
 # === POLL ALL NODES ===
 def poll_nodes():
     PARSED_ONCE = False
     with serial.Serial(PORT, BAUD, timeout=TIMEOUT) as ser:
-        time.sleep(1)
-
-        for run in range(1, RUNS + 1):
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        time.sleep(0.1)  # Give Arduino time to settle
+        run = 0
+        while True:
+            run += 1
             # print(f"\n=== Simulation Run {run} ===")
             node_data = {}
             missed_nodes = []
