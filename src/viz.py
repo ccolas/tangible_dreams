@@ -5,13 +5,15 @@ import jax.numpy as jnp
 from abc import ABC, abstractmethod
 import time
 import pygame
+import asyncio
+from src.github_save import save_and_push
 
 
 class VisualizationBackend(ABC):
     """Abstract base class for visualization backends"""
 
     @abstractmethod
-    def initialize(self, width: int, height: int):
+    def initialize(self, controller, width: int, height: int):
         """Initialize the visualization window"""
         pass
 
@@ -30,9 +32,10 @@ class PygameBackend(VisualizationBackend):
     def __init__(self):
         pygame.init()
 
-    def initialize(self, render_width: int, render_height: int,
+    def initialize(self, controller, render_width: int, render_height: int,
                    window_scale: float = 0.4):  # Scale factor for window size
         # Keep track of full resolution for rendering
+        self.controller = controller
         self.render_width = render_width
         self.render_height = render_height
 
@@ -82,6 +85,10 @@ class PygameBackend(VisualizationBackend):
                 return False
             elif event.type == pygame.VIDEORESIZE:
                 self.width, self.height = event.size
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_s and self.controller:
+                    print('SAVING state and image and pushing to repo')
+                    asyncio.create_task(save_and_push(self.controller.cppn, self.controller.output_path))
 
         times = {
             'permute': t1 - t0,

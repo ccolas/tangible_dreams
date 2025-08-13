@@ -82,15 +82,14 @@ def spiral_symmetry(x, y, n_folds_raw, spiral_raw):
     return jnp.sin(jnp.mod(theta, 2 * jnp.pi / n_folds) * n_folds + spiral * r)
 
 
-input_functions = [
-    lambda x, y, p1, p2: x,
-    lambda x, y, p1, p2: y,
-    lambda x, y, p1, p2: rotated_abs(x, y, rot_deg_raw=p1, gain_raw=p2),
-    lambda x, y, p1, p2: generalized_radial(x, y, freq_raw=p1, width_raw=p2),
-    lambda x, y, p1, p2: angular_sinusoid(x, y, phase_raw=p1, amplitude_raw=p2),
-    lambda x, y, p1, p2: grid(x, y, freq_raw=p1, alpha_raw=p2),
-    lambda x, y, p1, p2: spiral_symmetry(x, y, n_folds_raw=p1, spiral_raw=p2),
-]
+input_functions = dict(x=lambda x, y, p1, p2: x,
+                       y=lambda x, y, p1, p2: y,
+                       symmetry=lambda x, y, p1, p2: rotated_abs(x, y, rot_deg_raw=p1, gain_raw=p2),
+                       radial=lambda x, y, p1, p2: generalized_radial(x, y, freq_raw=p1, width_raw=p2),
+                       angular=lambda x, y, p1, p2: angular_sinusoid(x, y, phase_raw=p1, amplitude_raw=p2),
+                       grid=lambda x, y, p1, p2: grid(x, y, freq_raw=p1, alpha_raw=p2),
+                       spiral=lambda x, y, p1, p2: spiral_symmetry(x, y, n_folds_raw=p1, spiral_raw=p2))
+input_selector_mapping = ['x', 'y', 'symmetry', 'radial', 'angular', 'grid', 'spiral', 'y']
 
 
 # param mapping
@@ -109,6 +108,26 @@ def norm_value(value, magnitude):
     return value / 1023 - 0.5 * 2 * magnitude
 
 def weight_mapping(value, vmin=0, vmax=1023, range_=5.0):
+    norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
+    scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
+    return range_ * scaled
+
+def slope_mapping(value, vmin=0, vmax=1023, range_=5.0):
+    norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
+    scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
+    return range_ * scaled
+
+def contrast_mapping(value, vmin=0, vmax=1023, range_=5.0):
+    norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
+    scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
+    return range_ * scaled
+
+def balance_mapping(value, vmin=0, vmax=1023, range_=5.0):
+    norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
+    scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
+    return range_ * scaled
+
+def mods_mapping(value, vmin=0, vmax=1023, range_=5.0):
     norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
     scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
     return range_ * scaled

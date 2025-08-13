@@ -169,8 +169,9 @@ void loop(){
   if (changed[idxForPin(1)] && !changed[idxForPin(4)]) { changed[idxForPin(4)] = true; changeCount++; }
   if (changed[idxForPin(2)] && !changed[idxForPin(5)]) { changed[idxForPin(5)] = true; changeCount++; }
 
-  if (changed[idxForPin(9)] && !changed[idxForPin(0)]) { changed[idxForPin(0)] = true; changeCount++; }
-  if (changed[idxForPin(9)] && !changed[idxForPin(3)]) { changed[idxForPin(3)] = true; changeCount++; }
+   // these may be needed when CV becomes actual reading from A0 to control A4
+   //   if (changed[idxForPin(9)] && !changed[idxForPin(0)]) { changed[idxForPin(0)] = true; changeCount++; }
+   //   if (changed[idxForPin(9)] && !changed[idxForPin(3)]) { changed[idxForPin(3)] = true; changeCount++; }
 
   txBegin();
   bus.write(0xAA);

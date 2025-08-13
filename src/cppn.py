@@ -22,7 +22,6 @@ class CPPN:
         self.t_start = time.time()
         self.last_time = 0
         self.update_period = 0.03
-        self.reactive = False
         self.cam_input = False
 
         # General config
@@ -97,35 +96,35 @@ class CPPN:
         if params.get('load_from'):
             self.set_state(state_path=params['load_from'])
 
-    def update_cam(self, res=None):
-        if res is None:
-            res = self.default_res
-        # TODO: find something better here
-        if self.cam_input:
-            now = self.time
-            if now - self.last_time > self.update_period:
-                target_shape = self.img_shapes[res]
-                ret, frame = self.cam.read()
-                if not ret:
-                    return
-
-                # Flip for mirror view
-                gray = cv2.flip(cv2.cvtColor(cv2.flip(frame, 1), cv2.COLOR_BGR2GRAY), 1)
-
-                # Denoise with Gaussian blur
-                k = 11
-                sigma = 1
-                blurred = cv2.GaussianBlur(gray, (k, k), sigma)
-                blurred = cv2.resize(blurred, (target_shape[1], target_shape[0]))  # W x H
-
-                grad_x = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
-                grad_y = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
-                grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-                self.cam_img = grad_mag / (grad_mag.max() + 1e-6)
-
-                # self.cam_img = discretized.astype(np.float32)
-                self.needs_update = True
-                self.last_time = now
+    # def update_cam(self, res=None):
+    #     if res is None:
+    #         res = self.default_res
+    #     # TODO: find something better here
+    #     if self.cam_input:
+    #         now = self.time
+    #         if now - self.last_time > self.update_period:
+    #             target_shape = self.img_shapes[res]
+    #             ret, frame = self.cam.read()
+    #             if not ret:
+    #                 return
+    #
+    #             # Flip for mirror view
+    #             gray = cv2.flip(cv2.cvtColor(cv2.flip(frame, 1), cv2.COLOR_BGR2GRAY), 1)
+    #
+    #             # Denoise with Gaussian blur
+    #             k = 11
+    #             sigma = 1
+    #             blurred = cv2.GaussianBlur(gray, (k, k), sigma)
+    #             blurred = cv2.resize(blurred, (target_shape[1], target_shape[0]))  # W x H
+    #
+    #             grad_x = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+    #             grad_y = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+    #             grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+    #             self.cam_img = grad_mag / (grad_mag.max() + 1e-6)
+    #
+    #             # self.cam_img = discretized.astype(np.float32)
+    #             self.needs_update = True
+    #             self.last_time = now
 
     # def reactive_update(self):
     #     if self.reactive:
@@ -144,28 +143,27 @@ class CPPN:
     #             # print(value)
     #             self.slope_mods = self.slope_mods.at[0].set(value)
     #             self.needs_update = True
-    def reactive_update(self):
-        if self.reactive:
-            time = self.time
-            if time - self.last_time > self.update_period:
-                self.last_time = time
+    def reactive_update(self, i):
+        now = self.time
+        if now - self.last_time > self.update_period:
+            self.last_time = now
 
-                # Smooth, pseudo-chaotic looping
-                a, b = 2.0, 3.1
-                value = np.sin(a * time + np.sin(b * time))  # in [-1, 1]
+            # Smooth, pseudo-chaotic looping
+            a, b = 2.0, 3.1
+            value = np.sin(a * now + np.sin(b * now + i) + i)  # in [-1, 1]
+            return value * 3
+        else:
+            return None
 
-                print(value)
-                # self.weights = self.weights.at[7, 9].set(value)
-                self.slope_mods = self.slope_mods.at[0].set(value)
-                self.needs_update = True
+
 
 
 
     def update(self, res=None):
         if res is None:
             res = self.default_res
-        if res != self.default_res:
-            self.update_cam(res)
+        # if res != self.default_res:
+        #     self.update_cam(res)
 
         coord_x, coord_y = self.coords[res]
 
