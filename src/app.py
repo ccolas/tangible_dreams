@@ -37,7 +37,7 @@ async def main():
     else:
         raise NotImplementedError
 
-    vis = create_backend('pygame')
+    vis = create_backend('moderngl')
     vis.initialize(
         cppn=controller.cppn,
         render_width=int(RES * FACTOR),
