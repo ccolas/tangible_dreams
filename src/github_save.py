@@ -4,10 +4,10 @@ import os
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
-async def save_and_push(cppn, output_path):
+async def save_and_push(cppn):
     ts = cppn.timestamp
     cppn.save_state()  # saves .pkl and .png into output_path
-    rel_output_path = os.path.relpath(output_path, repo_path)
+    rel_output_path = os.path.relpath(cppn.output_path, repo_path)
     try:
         subprocess.run(["git", "add", rel_output_path], cwd=repo_path, check=True)
         # Commit with timestamp in message

@@ -13,6 +13,7 @@ class MIDIController:
         self.params = params
         self.debug = params['debug']
         self.setup_midi()
+        self.set_pressed = False
 
     def setup_midi(self):
         ports = self.midi_in.get_ports()
@@ -58,10 +59,10 @@ class MIDIController:
 
         # Handle SET button
         if control == 82:
-            self.cppn.set_pressed = (value == 127)
+            self.set_pressed = (value == 127)
             return
 
-        if self.cppn.set_pressed:
+        if self.set_pressed:
             # Alternative controls when SET is pressed
             if control == 224:  # First slider for zoom
                 value = value / 127 * 1023

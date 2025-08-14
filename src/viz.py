@@ -1,4 +1,4 @@
-# import moderngl
+import moderngl
 import numpy as np
 # import cv2
 import jax.numpy as jnp
@@ -7,109 +7,151 @@ import time
 import pygame
 import asyncio
 from src.github_save import save_and_push
+from pygame.locals import OPENGL, DOUBLEBUF, RESIZABLE
+import jax
 
 
 class VisualizationBackend(ABC):
-    """Abstract base class for visualization backends"""
-
     @abstractmethod
-    def initialize(self, controller, width: int, height: int):
-        """Initialize the visualization window"""
+    def initialize(self, controller, width: int, height: int, window_scale: float = 0.5):
         pass
 
     @abstractmethod
     def update(self, image_data):
-        """Update the display with new image data"""
         pass
 
     @abstractmethod
     def cleanup(self):
-        """Clean up resources"""
         pass
 
 
-class PygameBackend(VisualizationBackend):
+
+class ModernGLBackend:
     def __init__(self):
         pygame.init()
 
-    def initialize(self, controller, render_width: int, render_height: int,
-                   window_scale: float = 0.4):  # Scale factor for window size
-        # Keep track of full resolution for rendering
-        self.controller = controller
-        self.render_width = render_width
-        self.render_height = render_height
+    def initialize(self, cppn, width: int, height: int, window_scale: float):
+        self.cppn = cppn
+        self.render_width = width
+        self.render_height = height
 
-        # Calculate window size
-        self.width = int(render_width * window_scale)
-        self.height = int(render_height * window_scale)
+        # Create an OpenGL-enabled Pygame window
+        self.screen = pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
+        pygame.display.set_caption("CPPN (ModernGL)")
 
-        # Create window
-        self.screen = pygame.display.set_mode(
-            (self.width, self.height),
-            pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF
+        # Create ModernGL context from the Pygame window
+        self.ctx = moderngl.create_context()
+
+        # Create a texture to hold our image
+        self.texture = self.ctx.texture((width, height), components=3)
+        self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+
+        # Fullscreen quad to display the texture
+        vertices = np.array([
+            -1, -1,  0.0, 0.0,
+            1, -1,  1.0, 0.0,
+            -1,  1,  0.0, 1.0,
+            1,  1,  1.0, 1.0
+        ], dtype='f4')
+
+        self.prog = self.ctx.program(
+            vertex_shader='''
+                #version 330
+                in vec2 in_vert;
+                in vec2 in_tex;
+                out vec2 v_tex;
+                void main() {
+                    v_tex = in_tex;
+                    gl_Position = vec4(in_vert, 0.0, 1.0);
+                }
+            ''',
+            fragment_shader='''
+                #version 330
+                uniform sampler2D Texture;
+                in vec2 v_tex;
+                out vec4 f_color;
+                void main() {
+                    f_color = texture(Texture, v_tex);
+                }
+            '''
         )
-        pygame.display.set_caption("CPPN")
 
-        # Full resolution surface for rendering
-        self.surface = pygame.Surface((render_width, render_height))
+        vbo = self.ctx.buffer(vertices.tobytes())
+        vao_content = [
+            (vbo, '2f 2f', 'in_vert', 'in_tex')
+        ]
+        self.vao = self.ctx.vertex_array(self.prog, vao_content)
 
     def update(self, image_data):
-        t0 = time.time()
+        # Convert JAX array → NumPy uint8 → upload to GPU texture
+        img_np = (np.array(image_data) * 255).astype('u1')
+        self.texture.write(img_np.tobytes())
 
-        # Try to do all conversions while still in JAX
-        display_image = np.transpose(np.array((image_data * 255).astype(jnp.uint8)),(1, 0, 2))
-        t1 = time.time()
-
-        # Alternative: try pre-allocated numpy buffer
-        # if not hasattr(self, 'np_buffer'):
-        #     self.np_buffer = np.empty(display_image.shape, dtype=np.uint8)
-        # np.multiply(image_data, 255, out=self.np_buffer)
-
-        # Update surface using a temporary array view
-        surface_array = pygame.surfarray.pixels3d(self.surface)
-        np.copyto(surface_array, display_image)
-        del surface_array
-
-        t2 = time.time()
-
-        # Scale to window size and blit
-        scaled = pygame.transform.scale(self.surface, (self.width, self.height))
-        self.screen.blit(scaled, (0, 0))
+        # Render to screen
+        self.ctx.clear(0.0, 0.0, 0.0)
+        self.texture.use()
+        self.vao.render(moderngl.TRIANGLE_STRIP)
         pygame.display.flip()
 
-        t3 = time.time()
-
-        # Process events
+        # Event handling
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
-            elif event.type == pygame.VIDEORESIZE:
-                self.width, self.height = event.size
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_s and self.controller:
-                    print('SAVING state and image and pushing to repo')
-                    asyncio.create_task(save_and_push(self.controller.cppn, self.controller.output_path))
-
-        times = {
-            'permute': t1 - t0,
-            'convert': t2 - t1,
-            'display': t3 - t2,
-            'total': t3 - t0
-        }
-        return times
+        return True
 
     def cleanup(self):
         pygame.quit()
 
 
 
+
+class PygameBackend(VisualizationBackend):
+    def __init__(self):
+        pygame.init()
+
+    def initialize(self, cppn, width: int, height: int, window_scale: float = 0.5):
+        self.cppn = cppn
+        self.render_w, self.render_h = int(width), int(height)
+
+        flags = pygame.SCALED | pygame.RESIZABLE | pygame.DOUBLEBUF
+        try:
+            self.screen = pygame.display.set_mode((self.render_w, self.render_h), flags, vsync=0)
+        except TypeError:
+            self.screen = pygame.display.set_mode((self.render_w, self.render_h), flags)
+
+        self.surface = pygame.Surface((self.render_w, self.render_h)).convert(self.screen)
+        pygame.event.set_allowed([pygame.QUIT, pygame.VIDEORESIZE, pygame.KEYDOWN])
+
+    def update(self, image_data):
+        # image_data: HxWx3 uint8
+        frame = np.asarray(image_data, dtype=np.uint8, order="C")
+
+        # Pygame surfarray expects (W,H,3); use a view, no copy
+        whc = np.swapaxes(frame, 0, 1)
+        pygame.surfarray.blit_array(self.surface, whc)
+        self.screen.blit(self.surface, (0, 0))
+        pygame.display.flip()
+
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT:
+                return False
+            elif e.type == pygame.VIDEORESIZE:
+                # SCALED handles the stretching; just update the window size
+                pygame.display.set_mode(e.size, pygame.SCALED | pygame.RESIZABLE | pygame.DOUBLEBUF)
+            elif e.type == pygame.KEYDOWN and e.key == pygame.K_s and self.cppn:
+                import asyncio
+                from src.github_save import save_and_push
+                asyncio.create_task(save_and_push(self.cppn))
+        return True
+
+    def cleanup(self):
+        pygame.quit()
+
 def create_backend(backend_type='moderngl'):
-    """Factory function to create visualization backend"""
-    if backend_type == 'pygame':
+    if backend_type == 'moderngl':
+        return ModernGLBackend()
+    elif backend_type == 'pygame':
         return PygameBackend()
-    # elif backend_type == 'moderngl':
-    #     return ModernGLBackend()
-    # elif backend_type == 'opencv':
-    #     return OpenCVBackend()
     else:
         raise ValueError(f"Unknown backend type: {backend_type}")
+

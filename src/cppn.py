@@ -8,6 +8,7 @@ from collections import deque
 import networkx as nx
 from PIL import Image
 import pickle
+import jax
 import cv2
 import matplotlib.pyplot as plt
 
@@ -32,7 +33,7 @@ class CPPN:
 
         # Architecture
         self.n_inputs = 6
-        self.n_hidden = params['n_middle_nodes']
+        self.n_hidden = 9
         self.n_outputs = 3
         self.n_nodes = self.n_inputs + self.n_hidden + self.n_outputs
         self.n_cycles = 3
@@ -42,29 +43,29 @@ class CPPN:
         self.output_ids = list(range(self.n_inputs + self.n_hidden, self.n_nodes))
 
         # Parameters
-        self.adj_matrix = jnp.zeros((self.n_nodes, self.n_nodes))
-        self.biases = jnp.zeros(self.n_hidden)
-        self.slopes = jnp.ones(self.n_hidden)
-        self.slope_mods = jnp.zeros(self.n_hidden)
-        self.weights = jnp.zeros((self.n_nodes, self.n_nodes))
-        self.weight_mods = jnp.zeros((self.n_nodes, self.n_nodes))
-        self.activation_ids = jnp.zeros(self.n_hidden, dtype=int)
+        # self.adj_matrix = jnp.zeros((self.n_nodes, self.n_nodes))
+        # self.biases = jnp.zeros(self.n_hidden)
+        # self.slopes = jnp.ones(self.n_hidden)
+        # self.slope_mods = jnp.zeros(self.n_hidden)
+        # self.weights = jnp.zeros((self.n_nodes, self.n_nodes))
+        # self.weight_mods = jnp.zeros((self.n_nodes, self.n_nodes))
+        # self.activation_ids = jnp.zeros(self.n_hidden, dtype=int)
 
         # Output transformation (RGB or HSL mode)
-        self.output_slopes = jnp.ones(3)   # scaling for output channels
-        self.output_slope_mods = jnp.zeros(3)   # scaling for output channels
-        self.output_biases = jnp.zeros(3)  # sigmoid or linear bias
-        self.output_modes = jnp.zeros(3, dtype=int)  # 0=sigmoid RGB, 1=clipped HSL
+        # self.output_slopes = jnp.ones(3)   # scaling for output channels
+        # self.output_slope_mods = jnp.zeros(3)   # scaling for output channels
+        # self.output_biases = jnp.zeros(3)  # sigmoid or linear bias
+        # self.output_modes = jnp.zeros(3, dtype=int)  # 0=sigmoid RGB, 1=clipped HSL
 
         # Input configuration (for inputs 1–6)
-        self.input_function_ids = jnp.array([0, 1, 2, 3, 4, 5])  # Index into input basis functions
-        self.input_params1 = jnp.full(self.n_inputs, 512)  # zoom → default 1
-        self.input_params2 = jnp.full(self.n_inputs, 512)  # bias → default 0
-        self.inverted_inputs = jnp.zeros(self.n_inputs)
+        # self.input_function_ids = jnp.array([0, 1, 2, 3, 4, 5])  # Index into input basis functions
+        # self.input_params1 = jnp.full(self.n_inputs, 512)  # zoom → default 1
+        # self.input_params2 = jnp.full(self.n_inputs, 512)  # bias → default 0
+        # self.inverted_inputs = jnp.zeros(self.n_inputs)
 
         # Node masking
-        self.node_active = jnp.ones(self.n_inputs + self.n_hidden + self.n_outputs)
-        self.cv_override = jnp.zeros(self.n_nodes)
+        # self.node_active = jnp.ones(self.n_inputs + self.n_hidden + self.n_outputs)
+        # self.cv_override = jnp.zeros(self.n_nodes)
         self.inputs_nodes_record = np.full((self.n_nodes, 3), -1, dtype=int)  # track what gets connected on inputs
 
         # Activations
@@ -76,25 +77,47 @@ class CPPN:
         self.input_functions = [input_functions[name] for name in self.input_function_names]
         self.coords = {self.default_res: build_coordinate_grid(self.default_res, self.factor),
                        self.high_res: build_coordinate_grid(self.high_res, self.factor)}
-        self.img_shapes = {self.default_res: self.coords[self.default_res][0].shape,
-                           self.high_res: self.coords[self.high_res][0].shape}
+        # self.img_shapes = {self.default_res: self.coords[self.default_res][0].shape,
+        #                    self.high_res: self.coords[self.high_res][0].shape}
 
+        self.device_state = self.make_initial_state()
         # Camera input
-        self.cam = cv2.VideoCapture(0)  # webcam index 0
-        self.cam_img = np.zeros(self.img_shapes[self.default_res], dtype=np.float32)  # normalized grayscale
+        # self.cam = cv2.VideoCapture(0)  # webcam index 0
+        # self.cam_img = np.zeros(self.img_shapes[self.default_res], dtype=np.float32)  # normalized grayscale
 
         # Runtime
         self.needs_update = True
-        self.first = True
 
         # Placeholder for compiled forward pass
         self.jitted_process_network = None
         self._init_jitted_functions()
         self.sample_network()
 
-        self.set_pressed = False
+        self._x_in = None  # cached (N, n_inputs) on device
+        self._x_in_key = None  # small host tuple to know when to invalidate
+
         if params.get('load_from'):
             self.set_state(state_path=params['load_from'])
+
+    def make_initial_state(self):
+        return {
+            'weights': jnp.zeros((self.n_nodes, self.n_nodes), dtype=jnp.float16),
+            'weight_mods': jnp.zeros((self.n_nodes, self.n_nodes), dtype=jnp.float16),
+            'adj_matrix': jnp.zeros((self.n_nodes, self.n_nodes), dtype=jnp.bool_),
+            'input_function_ids': jnp.array([0, 1, 2, 3, 4, 5], dtype=jnp.int32),
+            'inverted_inputs': jnp.zeros(self.n_inputs, dtype=jnp.int32),
+            'input_params1': jnp.full(self.n_inputs, 512, dtype=jnp.int32),
+            'input_params2': jnp.full(self.n_inputs, 512, dtype=jnp.int32),
+            'node_active': jnp.ones(self.n_nodes, dtype=jnp.bool_),
+            'biases': jnp.zeros(self.n_hidden, dtype=jnp.float32),
+            'slopes': jnp.ones(self.n_hidden, dtype=jnp.float32),
+            'slope_mods': jnp.zeros(self.n_hidden, dtype=jnp.float32),
+            'activation_ids': jnp.zeros(self.n_hidden, dtype=jnp.int32),
+            'output_biases': jnp.zeros(self.n_outputs, dtype=jnp.float32),
+            'output_slopes': jnp.ones(self.n_outputs, dtype=jnp.float32),
+            'output_slope_mods': jnp.zeros(self.n_outputs, dtype=jnp.float32),
+            'cv_override': jnp.zeros(self.n_nodes, dtype=jnp.bool_),
+        }
 
     # def update_cam(self, res=None):
     #     if res is None:
@@ -126,23 +149,6 @@ class CPPN:
     #             self.needs_update = True
     #             self.last_time = now
 
-    # def reactive_update(self):
-    #     if self.reactive:
-    #         time = self.time
-    #         if time - self.last_time > self.update_period:
-    #             self.last_time = time
-    #
-    #             # Toroidal signal with two incommensurate frequencies
-    #             alpha, beta = 1.5, 2.3
-    #             signal1 = np.sin(alpha * time)
-    #             signal2 = np.cos(beta * time)
-    #
-    #             # Combine or use independently
-    #             value = signal1 * 0.5 + signal2 * 0.5
-    #
-    #             # print(value)
-    #             self.slope_mods = self.slope_mods.at[0].set(value)
-    #             self.needs_update = True
     def reactive_update(self, i):
         now = self.time
         if now - self.last_time > self.update_period:
@@ -155,179 +161,112 @@ class CPPN:
         else:
             return None
 
-
-
-
-
     def update(self, res=None):
         if res is None:
             res = self.default_res
-        # if res != self.default_res:
-        #     self.update_cam(res)
+        coords_x, coords_y = self.coords[res]
 
-        coord_x, coord_y = self.coords[res]
+        key = self._inputs_key()
+        if (self._x_in is None) or (key != self._x_in_key):
+            self._x_in = self._compute_inputs(self.device_state, coords_x, coords_y)  # (N, n_in)
+            self._x_in_key = key
 
-        # t0 = time.time()
-        state = {
-            'weights': self.weights,
-            'weight_mods': self.weight_mods,
-            'adj_matrix': self.adj_matrix,
-            'input_function_ids': jnp.array(self.input_function_ids),
-            'inverted_inputs': self.inverted_inputs,
-            'input_params1': self.input_params1,
-            'input_params2': self.input_params2,
-            'node_active': self.node_active,
-            'biases': self.biases,
-            'slopes': self.slopes,
-            'slope_mods': self.slope_mods,
-            'activation_ids': self.activation_ids,
-            'output_biases': self.output_biases,
-            'output_slopes': self.output_slopes,
-            'output_slope_mods': self.output_slope_mods,
-            'output_modes': self.output_modes,
-            'cam_img': self.cam_img,
-            'cv_override': self.cv_override,
-        }
-        self.current_image = self.jitted_process_network(coord_x, coord_y, state, self.cyclic_start)
+        img = self._run_cycles(self.device_state, self._x_in, coords_x)  # uint8 on device
         self.needs_update = False
-        return self.current_image
+        return img
 
     def _init_jitted_functions(self):
-        n_inputs = self.n_inputs
-        n_hidden = self.n_hidden
-        n_outputs = self.n_outputs
-        n_nodes = self.n_nodes
-        activations = self.activations
+        n_in, n_h, n_out = self.n_inputs, self.n_hidden, self.n_outputs
+        n_nodes = n_in + n_h + n_out
 
-        def define_basis_fn():
-            return lambda fn_id, x, y, p1, p2: lax.switch(fn_id, self.input_functions, x, y, p1, p2)
+        activations = tuple(self.activations)  # static inside JIT
+        input_fns = tuple(self.input_functions)  # static inside JIT
 
-        basis_fn = define_basis_fn()
+        from jax import jit, lax
+        import jax
+        import jax.numpy as jnp
 
         @jit
-        def process_inputs(state, x, y, cam_img):
-            def compute_input(i):
-                general_zoom_x = zoom_mapping(state['input_params1'][0])  # remap values
-                general_zoom_y = zoom_mapping(state['input_params1'][1])
-                general_bias_x = bias_mapping(state['input_params2'][0])
-                general_bias_y = bias_mapping(state['input_params2'][1])
+        def _basis_switch(fn_id, x, y, p1, p2):
+            return lax.switch(fn_id, input_fns, x, y, p1, p2)
 
-                p1 = state['input_params1'][i]  # in 0-1023
-                p2 = state['input_params2'][i]  # in 0-1023
+        @jit
+        def _compute_inputs(state, coords_x, coords_y):
+            # Build (N, n_in) once per input-param change
+            gz_x = zoom_mapping(state['input_params1'][0])
+            gz_y = zoom_mapping(state['input_params1'][1])
+            gb_x = bias_mapping(state['input_params2'][0])
+            gb_y = bias_mapping(state['input_params2'][1])
+
+            x = coords_x;
+            y = coords_y
+            H, W = x.shape
+            N = H * W
+
+            def one_input(i):
+                p1 = state['input_params1'][i]
+                p2 = state['input_params2'][i]
                 f_id = state['input_function_ids'][i]
-                inv_flag = (state['inverted_inputs'][i] > 0.5)
+                inv = (state['inverted_inputs'][i] > 0)
 
-                def coords_(x, y):
-                    x_i = (x + general_bias_x) / general_zoom_x
-                    y_i = (y + general_bias_y) / general_zoom_y
-                    # Only invert the relevant axis for X/Y coordinate inputs
-                    # f_id: 0 = 'x', 1 = 'y'
-                    x_i = lax.select(inv_flag & (f_id == 0), -x_i, x_i)
-                    y_i = lax.select(inv_flag & (f_id == 1), -y_i, y_i)
+                x_i = (x + gb_x) / gz_x
+                y_i = (y + gb_y) / gz_y
+                x_i = lax.select(inv & (f_id == 0), -x_i, x_i)
+                y_i = lax.select(inv & (f_id == 1), -y_i, y_i)
 
-                    return x_i, y_i
+                return _basis_switch(f_id, x_i, y_i, p1, p2) * state['node_active'][i]
 
-                x_i, y_i = coords_(x, y)
-
-                val = lax.cond(
-                    f_id == -1,
-                    lambda _: cam_img,
-                    lambda _: basis_fn(f_id, x_i, y_i, p1, p2),
-                    operand=None
-                )
-                return val * state['node_active'][i]
-
-            return jnp.stack([compute_input(i) for i in range(n_inputs)]).reshape(n_inputs, -1)
+            inp = jnp.stack([one_input(i) for i in range(n_in)], axis=0)  # (n_in,H,W)
+            return inp.reshape(n_in, N).T  # (N, n_in) float32
 
         @jit
-        def apply_activation(x, activation_id):
-            return lax.switch(activation_id, activations, x)
+        def _apply_activation_rows(vals, act_ids):
+            # vals: (n_h, N) -> apply per hidden row
+            def f(aid, row):
+                return lax.switch(aid, activations, row)
+
+            return jax.vmap(f, in_axes=(0, 0))(act_ids, vals)
 
         @jit
-        def process_hidden_node(weights, x, bias, slope, slope_mod, activation_id, active_flag):
-            net = jnp.dot(weights, x)
-            return apply_activation((net + bias) * (slope + slope_mod), activation_id) * active_flag
+        def _run_cycles(state, x_in, coords_x):
+            # x_in: (N, n_in); produce uint8 image
+            H, W = coords_x.shape
+            N = H * W
 
-        @jit
-        def process_output_node(weights, x, bias, slope, slope_mod, active_flag):
-            net = jnp.dot(weights, x)
-            return (net + bias) * (slope + slope_mod) * active_flag
+            # weights + mask (+ mods if cv_override enabled)
+            Wts = (state['weights'] + state['weight_mods'] * state['cv_override'][None, :])
+            Wts = (Wts * state['adj_matrix']).astype(jnp.float16)  # fp16 buffers; accumulate fp32
 
-        @jit
-        def hsl_to_rgb(h, s, l):
-            def f(n):
-                k = (n + h * 6.0) % 6.0
-                a = s * jnp.minimum(l, 1.0 - l)
-                return l - a * jnp.maximum(-1.0, jnp.minimum(jnp.minimum(k - 3.0, 9.0 - k), 1.0))
+            # activations buffer: (n_nodes, N) bf16/fp16
+            x = jnp.zeros((n_nodes, N), dtype=jnp.float16)
+            x = x.at[:n_in].set(x_in.T.astype(jnp.float16))
 
-            return jnp.stack([f(0.0), f(2.0), f(4.0)], axis=0)
+            active = state['node_active'][:, None]  # (n_nodes,1)
 
-        @jit
-        def run_network(coord_x, coord_y, state, cyclic_start):
-            weights = state['weights'] * state['adj_matrix']
+            def body(_, carry):
+                x, _net_prev = carry
+                net = jnp.matmul(Wts.T.astype(jnp.float32), x.astype(jnp.float32))  # (n_nodes,N)
 
+                h = net[n_in:n_in + n_h]
+                h = (h + state['biases'][:, None]) * (state['slopes'][:, None] + state['slope_mods'][:, None])
+                h = _apply_activation_rows(h, state['activation_ids'])
+                x = x.at[n_in:n_in + n_h].set((h * active[n_in:n_in + n_h]).astype(jnp.float16))
 
-            # add weight modulation for cv override
-            cv_override = state['cv_override']
-            weights_mods = state['weight_mods'] * state['adj_matrix']
-            mask = jnp.expand_dims(cv_override, axis=0)  # shape (1, n_nodes)
-            weights = weights + weights_mods * mask
+                return (x, net)
 
-            inputs_flat = process_inputs(state, coord_x, coord_y, state['cam_img'])
+            net0 = jnp.zeros((n_nodes, N), dtype=jnp.float32)
+            x, net = lax.fori_loop(0, self.n_cycles, body, (x, net0))
 
-            x = jnp.zeros((n_nodes, inputs_flat.shape[1]))
-            x = x.at[:n_inputs].set(inputs_flat)
+            out = net[n_in + n_h:n_in + n_h + n_out]
+            out = (out + state['output_biases'][:, None]) * (state['output_slopes'][:, None] + state['output_slope_mods'][:, None])
+            out = jnp.clip(out, 0.0, 1.0)  # (n_out, N)
+            img = (out.T * 255.0).astype(jnp.uint8).reshape(H, W, n_out)
+            return img
 
-            def hidden_cycle(i_cycle, x):
-                start = lax.select(i_cycle == 0, n_inputs, cyclic_start)
-                end = n_inputs + n_hidden
-
-                def hidden_loop(i, x):
-                    hidden_idx = i - n_inputs
-                    return x.at[i].set(
-                        process_hidden_node(
-                            weights[:, i],
-                            x,
-                            state['biases'][hidden_idx],
-                            state['slopes'][hidden_idx],
-                            state['slope_mods'][hidden_idx],
-                            state['activation_ids'][hidden_idx],
-                            state['node_active'][i]
-                        )
-                    )
-
-                return lax.fori_loop(start, end, hidden_loop, x)
-
-            x = lax.fori_loop(0, self.n_cycles, hidden_cycle, x)
-
-            def output_loop(i, outputs):
-                output_idx = i - n_inputs - n_hidden
-                val = process_output_node(
-                    weights[:, i],
-                    x,
-                    state['output_biases'][output_idx],
-                    state['output_slopes'][output_idx],
-                    state['output_slope_mods'][output_idx],
-                    state['node_active'][i]
-                )
-                return outputs.at[i].set(val)
-
-            outputs = jnp.zeros((n_outputs, inputs_flat.shape[1]))
-            start = n_inputs + n_hidden
-            end = n_inputs + n_hidden + n_outputs
-            outputs = lax.fori_loop(start, end, output_loop, outputs)
-
-            out = lax.cond(
-                jnp.any(state['output_modes'] > 0),
-                lambda _: hsl_to_rgb(outputs[0], outputs[1], outputs[2]),
-                lambda _: outputs,
-                operand=None
-            )
-
-            H, W = coord_x.shape[0], coord_x.shape[1]
-            return out.reshape(3, H, W).transpose(1, 2, 0)
-
-        self.jitted_process_network = run_network
+        self._compute_inputs = _compute_inputs
+        self._run_cycles = _run_cycles
+        self._x_in = None
+        self._x_in_key = None
 
     def sample_network(self):
         while True:
@@ -351,40 +290,41 @@ class CPPN:
             if all_hidden_connected:
                 break
 
-        # Reorder nodes: inputs first, then acyclic hidden nodes, then cyclic hidden nodes, then outputs
-        ordered = list(self.input_ids)
-        available = set(self.middle_ids)
+        # # Reorder nodes: inputs first, then acyclic hidden nodes, then cyclic hidden nodes, then outputs
+        # ordered = list(self.input_ids)
+        # available = set(self.middle_ids)
+        #
+        # while available:
+        #     added = False
+        #     for node in sorted(available):
+        #         sources = np.where(np_adj_matrix[:, node])[0]
+        #         if all(s in ordered for s in sources):
+        #             ordered.append(node)
+        #             available.remove(node)
+        #             added = True
+        #             break
+        #     if not added:
+        #         break  # cycle detected
+        #
+        # cyclic_start = len(ordered)
+        # ordered.extend(sorted(available))  # cyclic hidden nodes
+        # ordered.extend(self.output_ids)
 
-        while available:
-            added = False
-            for node in sorted(available):
-                sources = np.where(np_adj_matrix[:, node])[0]
-                if all(s in ordered for s in sources):
-                    ordered.append(node)
-                    available.remove(node)
-                    added = True
-                    break
-            if not added:
-                break  # cycle detected
-
-        cyclic_start = len(ordered)
-        ordered.extend(sorted(available))  # cyclic hidden nodes
-        ordered.extend(self.output_ids)
-
-        # Apply node reordering to adj matrix
-        reordered_adj = np.zeros_like(np_adj_matrix)
-        for i, old_i in enumerate(ordered):
-            for j, old_j in enumerate(ordered):
-                reordered_adj[i, j] = np_adj_matrix[old_i, old_j]
+        # # Apply node reordering to adj matrix
+        # reordered_adj = np.zeros_like(np_adj_matrix)
+        # for i, old_i in enumerate(ordered):
+        #     for j, old_j in enumerate(ordered):
+        #         reordered_adj[i, j] = np_adj_matrix[old_i, old_j]
 
         # Finalize
         key = random.PRNGKey(int(time.time()))
-        self.weights = (random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * reordered_adj
-        self.activation_ids = jnp.array(np.random.randint(0, len(self.activations), size=self.n_hidden), dtype=jnp.int32)
-        self.adj_matrix = jnp.array(reordered_adj)
-        self.cyclic_start = cyclic_start
+        jnp_adj_matrix = jnp.array(np_adj_matrix)
+        self.device_state['weights'] = jax.device_put((random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * jnp_adj_matrix)
+        self.device_state['activation_ids'] = jax.device_put(jnp.array(np.random.randint(0, len(self.activations), size=self.n_hidden), dtype=jnp.int32))
+        self.device_state['adj_matrix'] = jax.device_put(jnp_adj_matrix)
+        # self.cyclic_start = cyclic_start
         self.needs_update = True
-        print(f"[CPPN] Sampled new network with cyclic start at {self.cyclic_start}")
+        print(f"[CPPN] Sampled new network")
 
     def sample_adj_matrix(self):
         adj = np.zeros((self.n_nodes, self.n_nodes))
@@ -400,19 +340,26 @@ class CPPN:
                     adj[i, j] = 1
         return adj
 
-
     def save_state(self):
         timestamp = self.timestamp
         pkl_path = f"{self.output_path}/state_{timestamp}.pkl"
         img_path = f"{self.output_path}/image_{timestamp}.png"
         with open(pkl_path, 'wb') as f:
             pickle.dump(self.state, f)
-        img = self.update(res=2048)
-        display_image = np.array((img * 255).astype(jnp.uint8))
+        img = self.update(res=2048)  # uint8 on device
+        display_image = np.array(img)  # no *255 here
         print(f'Checkpoints saved at {img_path}')
         im = Image.fromarray(display_image)
         im.save(img_path)
         return img
+
+    def _inputs_key(self):
+        # small, hashable snapshot from device_state
+        p1 = np.array(self.device_state['input_params1'])
+        p2 = np.array(self.device_state['input_params2'])
+        inv = np.array(self.device_state['inverted_inputs'])
+        act = np.array(self.device_state['node_active'][:self.n_inputs])
+        return (tuple(p1.tolist()), tuple(p2.tolist()), tuple(inv.tolist()), tuple(act.tolist()))
 
     @property
     def timestamp(self):
@@ -420,47 +367,66 @@ class CPPN:
 
     @property
     def state(self):
-        keys = ['adj_matrix', 'biases', 'slopes', 'slope_mods', 'weights', 'activation_ids', 'output_slopes', 'output_slope_mods', 'output_biases', 'output_modes',
-                'input_function_ids', 'input_params1', 'input_params2', 'node_active', 'cv_override',
-                'inputs_nodes_record', 'cyclic_start', 'inverted_inputs']
-        state = {}
-        for key in keys:
-            state[key] = self.__dict__[key]
-        return state
+        return {k: np.array(v) for k, v in self.device_state.items()}
 
     def set_state(self, state=None, state_path=None):
         assert state != None or state_path != None
         if state is None:
             with open(state_path, "rb") as f:
                 state = pickle.load(f)
-        for key, val in state.items():
-            self.__dict__[key] = val
+        self.device_state = {k: jnp.array(v) for k, v in state.items()}
 
     @property
     def time(self):
         return time.time() - self.t_start
 
 
+
 if __name__ == '__main__':
+    import os
     RES = 1024
     FACTOR = 16 / 9
 
-    vis = create_backend('pygame')
-    vis.initialize(
-        render_width=int(RES * FACTOR),
-        render_height=RES,
-        window_scale=1  # Adjust this to make window bigger/smaller
-    )
-
     params = dict(debug=True, res=RES, factor=FACTOR)
+    repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
-    cppn = CPPN(output_path='...', params=params)
+    cppn = CPPN(output_path=repo_path + 'outputs/tests/', params=params)
     cppn.sample_network()
     img = cppn.update()
+
+    # vis = create_backend('pygame')
+    vis = create_backend('moderngl')
+    vis.initialize(
+        cppn=cppn,
+        width=int(RES * FACTOR),
+        height=RES,
+        window_scale=1  # Adjust this to make window bigger/smaller
+    )
     vis.update(img)
 
-    for _ in range(10):
-        time.sleep(1)
-        cppn.sample_network()
+    for _ in range(500):  # run more iterations
+        time.sleep(0.03)  # ~30 FPS target
+        t_init = time.time()
+
+        # --- Simulate small random weight changes ---
+        noise_scale = 0.02  # smaller = slower evolution
+        key = random.PRNGKey(int(time.time() * 1e6) & 0xFFFFFFFF)
+        noise = (random.uniform(key, cppn.device_state['weights'].shape, minval=-1.0, maxval=1.0)
+                 * noise_scale).astype(cppn.device_state['weights'].dtype)
+        cppn.device_state['weights'] = cppn.device_state['weights'] + noise
+        cppn.device_state['weights'] *= cppn.device_state['adj_matrix'].astype(cppn.device_state['weights'].dtype)
+
+        t_sample = time.time() - t_init
+
+        # --- Render update ---
+        t_init = time.time()
         img = cppn.update()
-        vis.update(img)
+        jax.block_until_ready(img)  # <- make compute time explicit
+        t_update = time.time() - t_init
+
+        # --- Display ---
+        t_init = time.time()
+        times = vis.update(img)
+        t_viz = time.time() - t_init
+
+        print(f"Δweights: {t_sample * 1000:.2f} ms | update: {t_update * 1000:.2f} ms | viz: {t_viz * 1000:.2f} ms, times: {times}")
