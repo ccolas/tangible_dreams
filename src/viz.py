@@ -35,9 +35,13 @@ class ModernGLBackend:
         self.render_width = width
         self.render_height = height
 
+        # Window size vs render resolution
+        window_width = int(width * window_scale)
+        window_height = int(height * window_scale)
+
         # Create an OpenGL-enabled Pygame window
-        self.screen = pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
-        pygame.display.set_caption("CPPN (ModernGL)")
+        self.screen = pygame.display.set_mode((window_width, window_height), DOUBLEBUF | OPENGL)
+        pygame.display.set_caption("Tangible Dreams")
 
         # Create ModernGL context from the Pygame window
         self.ctx = moderngl.create_context()
@@ -81,10 +85,12 @@ class ModernGLBackend:
             (vbo, '2f 2f', 'in_vert', 'in_tex')
         ]
         self.vao = self.ctx.vertex_array(self.prog, vao_content)
+        self.img_buffer = np.empty((height, width, 3), dtype='u1')
 
     def update(self, image_data):
-        # Convert JAX array → NumPy uint8 → upload to GPU texture
-        img_np = (np.array(image_data) * 255).astype('u1')
+        # image_data is already uint8 [0-255] on GPU from JAX
+        # Convert directly without CPU roundtrip
+        img_np = np.asarray(image_data)  # GPU->CPU copy only
         self.texture.write(img_np.tobytes())
 
         # Render to screen
@@ -97,6 +103,13 @@ class ModernGLBackend:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
+            elif event.type == pygame.VIDEORESIZE:
+                # SCALED handles the stretching; just update the window size
+                pygame.display.set_mode(event.size, pygame.SCALED | pygame.RESIZABLE | pygame.DOUBLEBUF)
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_s and self.cppn:
+                import asyncio
+                from src.github_save import save_and_push
+                asyncio.create_task(save_and_push(self.cppn))
         return True
 
     def cleanup(self):
