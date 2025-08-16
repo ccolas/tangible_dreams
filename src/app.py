@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 
 from src.midi import MIDIController
 from src.rs485 import RS485Controller
@@ -37,23 +38,29 @@ async def main():
     else:
         raise NotImplementedError
 
-    vis = create_backend('moderngl')
-    vis.initialize(
+    viz = create_backend('moderngl')
+    controller.viz = viz
+    viz.initialize(
         cppn=controller.cppn,
-        render_width=int(RES * FACTOR),
-        render_height=RES,
+        width=int(RES * FACTOR),
+        height=RES,
         window_scale=1  # Adjust this to make window bigger/smaller
     )
 
     try:
         # Generate initial image
         out = controller.cppn.update()
-        vis.update(out)
+        viz.update(out)
         while True:
             if controller.cppn.needs_update:
+                t_start = time.time()
                 out = controller.cppn.update()
-                times = vis.update(out)
-                print("Visualization times:", times)
+                t_forward = time.time()
+                viz.update(out)
+                t_viz = time.time()
+                time_forward = (t_forward - t_start)  * 1000
+                time_viz = (t_viz - t_forward) * 1000
+                # print(f"Times: forward={time_forward:.2f}ms, viz={time_viz:.2f}ms")
             await asyncio.sleep(0.00016)
 
     except KeyboardInterrupt:

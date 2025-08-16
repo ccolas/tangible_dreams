@@ -99,18 +99,16 @@ class ModernGLBackend:
         self.vao.render(moderngl.TRIANGLE_STRIP)
         pygame.display.flip()
 
-        # Event handling
+    def poll_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
             elif event.type == pygame.VIDEORESIZE:
-                # SCALED handles the stretching; just update the window size
                 pygame.display.set_mode(event.size, pygame.SCALED | pygame.RESIZABLE | pygame.DOUBLEBUF)
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_s and self.cppn:
                 import asyncio
                 from src.github_save import save_and_push
                 asyncio.create_task(save_and_push(self.cppn))
-        return True
 
     def cleanup(self):
         pygame.quit()

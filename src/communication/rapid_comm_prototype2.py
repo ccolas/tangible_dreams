@@ -8,11 +8,11 @@ PORT = '/dev/ttyUSB0'
 BAUD = 115200
 START_BYTE = 0xAA
 END_BYTE = 0xBB
-TIMEOUT = 0.004  # 4ms
-TIMEOUT_TOTAL = 0.05
+TIMEOUT = 0.0045  # 4ms
+TIMEOUT_TOTAL = 0.1
 MAX_RETRIES = 3
 RUNS = 3000000
-NODES = [1]#, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+NODES = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 NODES_TO_PLOT = NODES
 
 # dmesg | grep tty
@@ -45,7 +45,7 @@ def parse_node_response(data):
     flag = data[1]
 
     if flag == 0x01:
-        print(f'{node_id}: no change received')
+        # print(f'{node_id}: no change received')
         return node_id, {}
 
     if flag == 0xFF:
@@ -84,43 +84,30 @@ def parse_node_response(data):
 
 
 
-def poll_single_node(ser, node_id, command=0x00):
-    attempt = 0
-    if command == 0x00:
-        timeout = TIMEOUT
-    else:
-        timeout = TIMEOUT_TOTAL
-    while attempt < MAX_RETRIES:
-        ser.reset_input_buffer()
-        ser.write(bytes([0xCC, node_id, command]))
-        # ser.write(bytes([node_id, command]))
+def poll_single_node(ser, node_id, command, timeout):
+    ser.reset_input_buffer()
+    ser.write(bytes([0xCC, node_id, command]))
 
-        buffer = bytearray()
-        reading = False
-        start_time = time.time()
+    buffer = bytearray()
+    reading = False
+    start_time = time.time()
 
-        while time.time() - start_time < timeout:
-            byte = ser.read()
-            if not byte:
-                continue
-            byte = byte[0]
+    while time.time() - start_time < timeout:
+        byte = ser.read()
+        if not byte:
+            continue
+        byte = byte[0]
 
-            if byte == START_BYTE:
-                buffer = bytearray()
-                reading = True
-            elif byte == END_BYTE and reading:
-                break
-            elif reading:
-                buffer.append(byte)
+        if byte == START_BYTE:
+            buffer = bytearray()
+            reading = True
+        elif byte == END_BYTE and reading:
+            break
+        elif reading:
+            buffer.append(byte)
 
-        if len(buffer) >= 2:
-            full = bytearray([START_BYTE]) + buffer + bytearray([END_BYTE])
-            # print(f"[RAW] Node {node_id} → {full.hex()}")
-            return buffer  # buffer includes: [node_id, flag, payload...]
-
-        attempt += 1
-
-    print(f"[MISS] Node {node_id}: No valid response, received: {buffer.hex()}")
+    if len(buffer) >= 2:
+        return buffer  # buffer includes: [node_id, flag, payload...]
     return None
 
 # === POLL ALL NODES ===
@@ -139,36 +126,52 @@ def poll_nodes():
             timings = defaultdict(float)
             command = 0x01 if (run == 1 or not PARSED_ONCE) else 0x00
 
+            if command == 0x00:
+                timeout = TIMEOUT
+                max_retries = MAX_RETRIES
+            else:
+                timeout = TIMEOUT_TOTAL
+                max_retries = 10
+            i_attempts = []
             for node_id in NODES:
-                t_start = time.time()
-                buffer = poll_single_node(ser, node_id, command)
-                t_read = time.time()
+                i_attempt = 0
+                parsed = None
+                while i_attempt <= max_retries:
+                    i_attempt += 1
+                    t_start = time.time()
+                    buffer = poll_single_node(ser, node_id, command, timeout)
+                    t_read = time.time()
+                    timings['read'] += (t_read - t_start) * 1000
 
-                if buffer:
-                    parsed = parse_node_response(buffer)
-                    if parsed:
-                        node_data[node_id] = parsed[1]
-                        PARSED_ONCE = True
-                    else:
-                        missed_nodes.append(node_id)
-                        print(f"[FAIL] Node {node_id}: Failed to parse → {buffer.hex()}")
+                    if buffer:
+                        parsed = parse_node_response(buffer)
+                        t_parse = time.time()
+                        timings['parse'] += (t_parse - t_read) * 1000
+                        if parsed:
+                            # if len(parsed[1]) > 0:
+                            break
+                        # print(f'failed to parse node {node_id} → {buffer.hex()}')
+                        continue
+                    # print(f'failed to read from node {node_id}')
+
+                if parsed:
+                    node_data[node_id] = parsed[1]
+                    PARSED_ONCE = True
                 else:
                     missed_nodes.append(node_id)
-
-                t_parse = time.time()
-                timings['read'] += (t_read - t_start) * 1000
-                timings['parse'] += (t_parse - t_read) * 1000
-
-
+                    print(f"[FAIL] Node {node_id} (after {max_retries} attempts)")
+                i_attempts.append(i_attempt)
 
             # print("\n[Node Data]")
             any_change = False
-            for node_id in NODES:
+            for node_id, i_attempt in zip(NODES, i_attempts):
                 if node_id in node_data:
                     if node_id in NODES_TO_PLOT:
                         if len(node_data[node_id]) > 0:
                             any_change = True
-                            print(f"  Node {node_id}: {node_data[node_id]}")
+                            print(f"  Node {node_id}: {node_data[node_id]}; i_attempts={i_attempt}")
+                            # filtered = {k: v for k, v in node_data[node_id].items() if k in [0, 1, 2]}
+                            # print(f"  Node {node_id}: {filtered}")
                 else:
                     print(f"  Node {node_id}: ❌")
             # if any_change:

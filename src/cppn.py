@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 
 from viz import create_backend
 from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping
+from src.misc.error_screen import generate_error_screen
 
 class CPPN:
     def __init__(self, output_path, params):
@@ -32,9 +33,11 @@ class CPPN:
         self.debug = params.get('debug', False)
 
         # Architecture
-        self.n_inputs = 6
+        self.n_inputs = 5
         self.n_hidden = 9
         self.n_outputs = 3
+        self.x_id = 4
+        self.y_id = 3
         self.n_nodes = self.n_inputs + self.n_hidden + self.n_outputs
         self.n_cycles = 3
 
@@ -77,6 +80,8 @@ class CPPN:
         self.input_functions = [input_functions[name] for name in self.input_function_names]
         self.coords = {self.default_res: build_coordinate_grid(self.default_res, self.factor),
                        self.high_res: build_coordinate_grid(self.high_res, self.factor)}
+        self.error_screen = {self.default_res: generate_error_screen(self.default_res, self.factor),
+                             self.high_res: generate_error_screen(self.high_res, self.factor)}
         # self.img_shapes = {self.default_res: self.coords[self.default_res][0].shape,
         #                    self.high_res: self.coords[self.high_res][0].shape}
 
@@ -91,7 +96,8 @@ class CPPN:
         # Placeholder for compiled forward pass
         self.jitted_process_network = None
         self._init_jitted_functions()
-        self.sample_network()
+        self.is_valid = False
+        # self.sample_network()
 
         self._x_in = None  # cached (N, n_inputs) on device
         self._x_in_key = None  # small host tuple to know when to invalidate
@@ -100,11 +106,11 @@ class CPPN:
             self.set_state(state_path=params['load_from'])
 
     def make_initial_state(self):
-        return {
+        state = {
             'weights': jnp.zeros((self.n_nodes, self.n_nodes), dtype=jnp.float16),
             'weight_mods': jnp.zeros((self.n_nodes, self.n_nodes), dtype=jnp.float16),
             'adj_matrix': jnp.zeros((self.n_nodes, self.n_nodes), dtype=jnp.bool_),
-            'input_function_ids': jnp.array([0, 1, 2, 3, 4, 5], dtype=jnp.int32),
+            'input_function_ids': jnp.array([-1] * self.n_inputs, dtype=jnp.int32),
             'inverted_inputs': jnp.zeros(self.n_inputs, dtype=jnp.int32),
             'input_params1': jnp.full(self.n_inputs, 512, dtype=jnp.int32),
             'input_params2': jnp.full(self.n_inputs, 512, dtype=jnp.int32),
@@ -118,6 +124,11 @@ class CPPN:
             'output_slope_mods': jnp.zeros(self.n_outputs, dtype=jnp.float32),
             'cv_override': jnp.zeros(self.n_nodes, dtype=jnp.bool_),
         }
+        state['input_function_ids'] = state['input_function_ids'].at[self.x_id].set(0)
+        state['input_function_ids'] = state['input_function_ids'].at[self.y_id].set(1)
+        return state
+
+
 
     # def update_cam(self, res=None):
     #     if res is None:
@@ -164,16 +175,20 @@ class CPPN:
     def update(self, res=None):
         if res is None:
             res = self.default_res
-        coords_x, coords_y = self.coords[res]
+        if not self.is_valid:
+            self.needs_update = False
+            return self.error_screen[res]
+        else:
+            coords_x, coords_y = self.coords[res]
 
-        key = self._inputs_key()
-        if (self._x_in is None) or (key != self._x_in_key):
-            self._x_in = self._compute_inputs(self.device_state, coords_x, coords_y)  # (N, n_in)
-            self._x_in_key = key
+            key = self._inputs_key(res)
+            if (self._x_in is None) or (key != self._x_in_key):
+                self._x_in = self._compute_inputs(self.device_state, coords_x, coords_y)  # (N, n_in)
+                self._x_in_key = key
 
-        img = self._run_cycles(self.device_state, self._x_in, coords_x)  # uint8 on device
-        self.needs_update = False
-        return img
+            img = self._run_cycles(self.device_state, self._x_in, coords_x)  # uint8 on device
+            self.needs_update = False
+            return img
 
     def _init_jitted_functions(self):
         n_in, n_h, n_out = self.n_inputs, self.n_hidden, self.n_outputs
@@ -193,10 +208,10 @@ class CPPN:
         @jit
         def _compute_inputs(state, coords_x, coords_y):
             # Build (N, n_in) once per input-param change
-            gz_x = zoom_mapping(state['input_params1'][0])
-            gz_y = zoom_mapping(state['input_params1'][1])
-            gb_x = bias_mapping(state['input_params2'][0])
-            gb_y = bias_mapping(state['input_params2'][1])
+            gz_x = zoom_mapping(state['input_params1'][self.x_id])
+            gz_y = zoom_mapping(state['input_params1'][self.y_id])
+            gb_x = bias_mapping(state['input_params2'][self.x_id])
+            gb_y = bias_mapping(state['input_params2'][self.y_id])
 
             x = coords_x;
             y = coords_y
@@ -274,7 +289,7 @@ class CPPN:
             G = nx.DiGraph(np_adj_matrix)
 
             # Ensure at least one input→output path
-            if not any(nx.has_path(G, i, o) for i in self.input_ids[2:] for o in self.output_ids):
+            if not any(nx.has_path(G, i, o) for i in self.input_ids for o in self.output_ids):
                 continue
 
             # Ensure every hidden node lies on some input→hidden→output path
@@ -318,13 +333,43 @@ class CPPN:
 
         # Finalize
         key = random.PRNGKey(int(time.time()))
-        jnp_adj_matrix = jnp.array(np_adj_matrix)
-        self.device_state['weights'] = jax.device_put((random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * jnp_adj_matrix)
+        jnp_adj_matrix = jnp.array(np_adj_matrix).astype(jnp.bool_)
+        self.device_state['weights'] = jax.device_put((random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * jnp_adj_matrix).astype(jnp.float16)
         self.device_state['activation_ids'] = jax.device_put(jnp.array(np.random.randint(0, len(self.activations), size=self.n_hidden), dtype=jnp.int32))
         self.device_state['adj_matrix'] = jax.device_put(jnp_adj_matrix)
         # self.cyclic_start = cyclic_start
         self.needs_update = True
+        self.is_valid = self.is_network_valid()
         print(f"[CPPN] Sampled new network")
+
+    def is_network_valid(self):
+        """Fast connectivity check directly on JAX array"""
+        # Get active node mask
+        active_mask = self.device_state['node_active']
+
+        # Mask the adjacency matrix - only connections between active nodes are valid
+        # If either source or target node is inactive, the connection is invalid
+        masked_adj = (self.device_state['adj_matrix'] &
+                      active_mask[:, None] &  # source node must be active
+                      active_mask[None, :])  # target node must be active
+
+        # Compute transitive closure on masked adjacency matrix
+        reachable = masked_adj > 0
+        prev = jnp.zeros_like(reachable, dtype=jnp.bool_)
+
+        while not jnp.array_equal(reachable, prev):
+            prev = reachable
+            reachable = (reachable @ reachable) | reachable
+
+        # Check input -> output connectivity (only among active nodes)
+        output_start = self.n_inputs + self.n_hidden
+        active_inputs = active_mask[:self.n_inputs]
+        active_outputs = active_mask[output_start:]
+
+        # Only check paths from active inputs to active outputs
+        valid_paths = reachable[:self.n_inputs, output_start:] & active_inputs[:, None] & active_outputs[None, :]
+
+        return bool(jnp.any(valid_paths))
 
     def sample_adj_matrix(self):
         adj = np.zeros((self.n_nodes, self.n_nodes))
@@ -353,13 +398,20 @@ class CPPN:
         im.save(img_path)
         return img
 
-    def _inputs_key(self):
-        # small, hashable snapshot from device_state
+    def _inputs_key(self, res=None):
         p1 = np.array(self.device_state['input_params1'])
         p2 = np.array(self.device_state['input_params2'])
         inv = np.array(self.device_state['inverted_inputs'])
         act = np.array(self.device_state['node_active'][:self.n_inputs])
-        return (tuple(p1.tolist()), tuple(p2.tolist()), tuple(inv.tolist()), tuple(act.tolist()))
+        fids = np.array(self.device_state['input_function_ids'][:self.n_inputs])
+        return (
+            tuple(p1.tolist()),
+            tuple(p2.tolist()),
+            tuple(inv.tolist()),
+            tuple(act.tolist()),
+            tuple(fids.tolist()),
+            res,  # 👈 add resolution to invalidate cache properly
+        )
 
     @property
     def timestamp(self):

@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // --- Node id
-#define NODE_ID 14
+#define NODE_ID 6
 
 // --- Pin mapping (hardware)
 #define AIN0          A0   // -> proto 0 (binned)
@@ -41,7 +41,7 @@ bool cvLast = false;
 uint8_t cvState = 0;
 
 // --- Helpers
-static inline void txBegin(){ digitalWrite(RS485_DE, HIGH); delayMicroseconds(100); }
+static inline void txBegin(){ digitalWrite(RS485_DE, HIGH); delayMicroseconds(500); }
 static inline void txEnd(){ bus.flush(); digitalWrite(RS485_DE, LOW); bus.listen(); }
 
 uint8_t mapToChoice(uint16_t v, uint8_t n){
@@ -51,7 +51,9 @@ uint8_t mapToChoice(uint16_t v, uint8_t n){
 }
 
 // custom thresholds for A0–A2 binning
-uint16_t thresholdNodeIds[] = {34, 57, 99, 139, 179, 248, 333, 377, 445, 518, 618, 703, 781, 871};
+// uint16_t thresholdNodeIds[] = {34, 57, 99, 139, 179, 248, 333, 377, 445, 518, 618, 703, 781, 871};
+// attempt to correct for misidentifications of nodes 11, 12, 13 (as 12, 13, 14) (+20)
+uint16_t thresholdNodeIds[] = {34, 57, 99, 139, 179, 248, 333, 377, 445, 518, 618, 723, 800, 891};
 #define NUM_THRESHOLDS (sizeof(thresholdNodeIds)/sizeof(thresholdNodeIds[0]))
 
 uint8_t mapToCustomBins(uint16_t v, const uint16_t* th, uint8_t len){
