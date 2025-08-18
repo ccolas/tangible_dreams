@@ -24,7 +24,7 @@ class RS485Controller:
         self.total_timeout = 0.1
         self.update_max_retries = 5
         # self.full_refresh_rate = 5
-        self.node_ids = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        self.node_ids = [1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         self.command = 0x01  # ask for full data
         self.start_byte = 0xAA
         self.end_byte = 0xBB
@@ -32,7 +32,7 @@ class RS485Controller:
 
         # identify node ids
         self.input_ids = [1, 2, 3, 4, 5]
-        self.middle_ids = list(range(7, 15))
+        self.middle_ids = [7, 9, 10, 11, 12, 13, 14]
         self.output_ids = [15, 16, 17]
         # self.real_nodes = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 ,17]
 
@@ -61,7 +61,8 @@ class RS485Controller:
     async def start_polling_loop(self):
         print('Starting RS845', flush=True)
         parsed_once = False
-        with serial.Serial(self.port, self.baud, timeout=self.total_timeout) as ser:
+        with serial.Serial(self.port, self.baud, timeout=self.total_timeout, write_timeout=0) as ser:
+            ser.inter_byte_timeout = 0
             ser.reset_input_buffer()
             ser.reset_output_buffer()
             await asyncio.sleep(0.1)
@@ -76,7 +77,7 @@ class RS485Controller:
                     if not parsed_once: parsed_once = True
                     time_poll = (t_poll - t_init) * 1000
                     time_update = (t_update - t_poll) * 1000
-                    # print(f'control time: poll={time_poll:.2f}ms, update={time_update:.2f}, attempts={i_attempts}')
+                    print(f'control time: poll={time_poll:.2f}ms, update={time_update:.2f}, attempts={i_attempts}')
                 if self.command == 0x01 and parsed_once: self.command = 0x00  # ask for updates only
                 await asyncio.sleep(0.00016)  # match main loop timing
 
@@ -206,7 +207,7 @@ class RS485Controller:
             # INPUT CONTROL
             # # # # # # # # # # # # # # #
 
-
+            # print(np.array(self.cppn.device_state['adj_matrix']).astype(int))
             if node_id in self.input_ids:
                 node_idx = node_id - 1
                 print(f'  node idx={node_idx}, input_idx={node_idx}')
@@ -268,26 +269,26 @@ class RS485Controller:
                         self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
                         print(f'  resetting weight modulators')
 
-                # If CV override is on, adjust connection for input 2
-                if self.cppn.device_state['cv_override'][node_idx]:
-                    sensor_id = 1
-                    input2_update = node_data.get(sensor_id, None)
-                    if input2_update is not None:
-                        source_id = input2_update
-                        source_idx = source_id - 1
-                        old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
-                        if source_idx != old_source_idx:
-                            if source_idx < len(self.node_ids):
-                                if old_source_idx >= 0:
-                                    self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
-                                    self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
-                                    print(f'  disconnecting {old_source_idx + 1} from {node_id}')
-                                if source_idx >= 0:
-                                    self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
-                                    self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
-                                    print(f'  connecting {source_id} to {node_id}')
-                            else:
-                                print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
+                # # If CV override is on, adjust connection for input 2
+                # if self.cppn.device_state['cv_override'][node_idx]:
+                #     sensor_id = 1
+                #     input2_update = node_data.get(sensor_id, None)
+                #     if input2_update is not None:
+                #         source_id = input2_update
+                #         source_idx = source_id - 1
+                #         old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
+                #         if source_idx != old_source_idx:
+                #             if source_idx < len(self.node_ids):
+                #                 if old_source_idx >= 0:
+                #                     self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
+                #                     self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
+                #                     print(f'  disconnecting {old_source_idx + 1} from {node_id}')
+                #                 if source_idx >= 0:
+                #                     self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
+                #                     self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
+                #                     print(f'  connecting {source_id} to {node_id}')
+                #             else:
+                #                 print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
 
                 for sensor_id, sensor_value in node_data.items():
                     if sensor_id in [0, 1, 2]:  # Input node ids
@@ -383,38 +384,38 @@ class RS485Controller:
                         self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
                         print(f'  resetting weight modulators')
 
-                if self.cppn.device_state['cv_override'][node_idx]:
-                    sensor_id = 1
-                    input2_update = node_data.get(sensor_id, None)
-                    if input2_update is not None:
-                        source_id = input2_update
-                        source_idx = source_id - 1
-                        old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
-                        if source_idx != old_source_idx:
-                            if source_idx < len(self.node_ids):
-                                if old_source_idx >= 0:
-                                    self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
-                                    self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
-                                    print(f'  disconnecting {old_source_idx + 1} from {node_id}')
-                                if source_idx >= 0:
-                                    self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
-                                    self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
-                                    print(f'  connecting {source_id} to {node_id}')
-                            else:
-                                print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
+                # if self.cppn.device_state['cv_override'][node_idx]:
+                #     sensor_id = 1
+                #     input2_update = node_data.get(sensor_id, None)
+                #     if input2_update is not None:
+                #         source_id = input2_update
+                #         source_idx = source_id - 1
+                #         old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
+                #         if source_idx != old_source_idx:
+                #             if source_idx < len(self.node_ids):
+                #                 if old_source_idx >= 0:
+                #                     self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
+                #                     self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
+                #                     print(f'  disconnecting {old_source_idx + 1} from {node_id}')
+                #                 if source_idx >= 0:
+                #                     self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
+                #                     self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
+                #                     print(f'  connecting {source_id} to {node_id}')
+                #             else:
+                #                 print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
 
                 for sensor_id, sensor_value in node_data.items():
                     if sensor_id in [0, 1, 2]:  # Input node ids
-                        # if self.cppn.cv_override[node_idx] and sensor_id == 0:
-                        #     print(f'  reading cv signal change: {sensor_value}')
-                        #     # this value becomes the weight of the connection from input 2
-                        #     weight2 = weight_mapping(sensor_value)
-                        #     controlled_input_id = 1
-                        #     source2_idx = self.cppn.inputs_nodes_record[node_idx, controlled_input_id]
-                        #     if source2_idx >= 0:
-                        #         self.cppn.weight_mods = self.cppn.weight_mods.at[source2_idx, node_idx].set(weight2)
-                        #         print(f'  cv controls weight 2: {weight2}')
-                        # else:
+                    #     if self.cppn.device_state['cv_override'][node_idx] and sensor_id == 0:
+                    #         print(f'  reading cv signal change: {sensor_value}')
+                    #         # this value becomes the weight of the connection from input 2
+                    #         weight2 = weight_mapping(sensor_value)
+                    #         controlled_input_id = 1
+                    #         source2_idx = self.cppn.inputs_nodes_record[node_idx, controlled_input_id]
+                    #         if source2_idx >= 0:
+                    #             self.cppn.weight_mods = self.cppn.weight_mods.at[source2_idx, node_idx].set(weight2)
+                    #             print(f'  cv controls weight 2: {weight2}')
+                    #     else:
                         source_id = sensor_value
                         source_idx = source_id - 1
                         old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
@@ -447,7 +448,7 @@ class RS485Controller:
                             weight = weight_mapping(sensor_value)
                             self.cppn.device_state['weights'] = self.cppn.device_state['weights'].at[source_idx, node_idx].set(weight)
                             if self.cppn.device_state['adj_matrix'][source_idx, node_idx]:
-                                print(f'  update weight {input_idx + 1} modulating source {source_idx + 1}: {weight}')
+                                print(f'  update weight {input_idx + 1} modulating source {source_idx + 1}: {sensor_value}, {weight}')
                     elif sensor_id == 6:
                         bias = balance_mapping(sensor_value)
                         self.cppn.device_state['output_biases'] = self.cppn.device_state['output_biases'].at[output_idx].set(bias)
@@ -467,10 +468,10 @@ class RS485Controller:
                     else:
                         raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
 
-        if graph_changed:
-            self.cppn.is_valid = self.cppn.is_network_valid()
-            if not self.cppn.is_valid:
-                print('NO PATH')
+        # if graph_changed:
+        #     self.cppn.is_valid = self.cppn.is_network_valid()
+        #     if not self.cppn.is_valid:
+        #         print('NO PATH')
 
         if len(changes) > 0:
             self.cppn.needs_update = True
@@ -484,7 +485,7 @@ class RS485Controller:
                     # find node connected in input 2
                     source2_idx = self.cppn.inputs_nodes_record[node_idx, 1]
                     if source2_idx >= 0:
-                        self.cppn.device_state = self.cppn.device_state['weight_mods'].at[source2_idx, node_idx].set(weight2)
+                        self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[source2_idx, node_idx].set(weight2)
                         # print(f'  cv controls weight 2: {weight2}')
                     self.cppn.needs_update = True
 

@@ -8,11 +8,11 @@ PORT = '/dev/ttyUSB0'
 BAUD = 115200
 START_BYTE = 0xAA
 END_BYTE = 0xBB
-TIMEOUT = 0.0045  # 4ms
+TIMEOUT = 0.004  # 4ms
 TIMEOUT_TOTAL = 0.1
 MAX_RETRIES = 3
 RUNS = 3000000
-NODES = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+NODES = [1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 NODES_TO_PLOT = NODES
 
 # dmesg | grep tty

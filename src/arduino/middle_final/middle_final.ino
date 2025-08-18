@@ -41,7 +41,7 @@ bool cvLast = false;
 uint8_t cvState = 0;
 
 // --- Helpers
-static inline void txBegin(){ digitalWrite(RS485_DE, HIGH); delayMicroseconds(500); }
+static inline void txBegin(){ digitalWrite(RS485_DE, HIGH); delayMicroseconds(100); }
 static inline void txEnd(){ bus.flush(); digitalWrite(RS485_DE, LOW); bus.listen(); }
 
 uint8_t mapToChoice(uint16_t v, uint8_t n){

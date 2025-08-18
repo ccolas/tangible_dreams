@@ -8,7 +8,7 @@ from src.viz import create_backend
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
-exp_id = "test"
+exp_id = "mit_stata"
 output_path = repo_path + f'outputs/{exp_id}/'
 os.makedirs(output_path, exist_ok=True)
 
@@ -49,17 +49,17 @@ async def main():
 
     try:
         # Generate initial image
-        out = controller.cppn.update()
-        viz.update(out)
+        # out = controller.cppn.update()
+        # viz.update(out)
         while True:
             if controller.cppn.needs_update:
-                t_start = time.time()
+                # t_start = time.time()
                 out = controller.cppn.update()
-                t_forward = time.time()
+                # t_forward = time.time()
                 viz.update(out)
-                t_viz = time.time()
-                time_forward = (t_forward - t_start)  * 1000
-                time_viz = (t_viz - t_forward) * 1000
+                # t_viz = time.time()
+                # time_forward = (t_forward - t_start)  * 1000
+                # time_viz = (t_viz - t_forward) * 1000
                 # print(f"Times: forward={time_forward:.2f}ms, viz={time_viz:.2f}ms")
             await asyncio.sleep(0.00016)
 

@@ -1,7 +1,5 @@
 import jax.numpy as jnp
-import numpy as np
-from jax import jit
-import networkx as nx
+import jax
 from src.jax_vnoise import jax_vnoise
 
 # =====================
@@ -11,14 +9,18 @@ from src.jax_vnoise import jax_vnoise
 noise = jax_vnoise.Noise()
 
 activation_fns = dict(
-    tanh=lambda x: jnp.tanh(x * 3),                                      # tanh
+    tanh=lambda x: jnp.tanh(x / 10),                                      # tanh
     cos=lambda x: jnp.cos(x * 3),         # cos
-    swish=lambda x: x * 5.0 / (1 + jnp.exp(-x * 5.0)),  # swish
-    gaussian=lambda x: jnp.exp(-x ** 2 / 1),  # gaussian
+    leaky_relu=lambda x: jnp.where(x > 0, x, 0.1 * x),
+    gaussian=lambda x: jnp.exp(-(x/2) ** 2 / 1),  # gaussian
     modulo=lambda x: ((x / 5) % 1.0) * 2 - 1,            # modulo
     riemann=lambda x: sum([1 / i**2 * jnp.sin(i**2 * x ) for i in range(1, 4)]),  # riemann
     perlin=lambda x: 2 * noise.noise1((1 * x).flatten(), octaves=3, persistence=0.1, lacunarity=5).reshape(x.shape), # perlin
-    mysterious=lambda x: jnp.abs(x * 2),                   # abs
+    mysterious=lambda x: jax.lax.fori_loop(
+        0, 5,
+        lambda i, v: 4 * v * (1 - v),
+        (x / 10 % 1.0)
+    )
 
     # lambda x: sum([0.7**i * jnp.abs(2**i * jnp.cos(x) - jnp.round(2**i * jnp.cos(x / 3 / 1.5 * 3)))
     #          for i in range(3)]),  # takagi
@@ -48,15 +50,15 @@ def rotated_abs(x, y, rot_deg_raw, gain_raw):
 # --- Radial Distance ---
 def generalized_radial(x, y, freq_raw, width_raw):
     r = jnp.sqrt(x**2 + y**2) / SCALE
-    freq = 2 ** ((freq_raw / 1023) * 3)  # 1 to 8 oscillations
-    width = (width_raw / 1023) * 10 + 0.1
+    freq = 2 ** ((freq_raw / 1023) * 4)  # 1 to 8 oscillations
+    width = (width_raw / 1023) * 10 + 1
     value = jnp.sin(r * freq) * jnp.exp(-r * width)
     return value * SCALE
 
 # --- Angular Sinusoid ---
 def angular_sinusoid(x, y, phase_raw, amplitude_raw):
     phase = (phase_raw / 1023) * 2 * jnp.pi
-    amplitude = (amplitude_raw / 1023) * 2  # 0 to 2
+    amplitude = (amplitude_raw / 1023) * 4 + 1  # 0 to 2
     theta = jnp.arctan2(y, x)
     return jnp.sin(theta + phase) * amplitude
 
@@ -71,7 +73,7 @@ def grid(x, y, freq_raw, alpha_raw):
     y_scaled = y * scale
 
     return jnp.sin(jnp.pi * x_scaled * freq + 0.3 * ((1 - alpha) + alpha * jnp.sin(9 * y_scaled))) * \
-        jnp.sin(jnp.pi * y_scaled * freq + 0.3 * ((1 - alpha) + alpha * jnp.sin(9 * x_scaled)))
+        jnp.sin(jnp.pi * y_scaled * freq + 0.3 * ((1 - alpha) + alpha * jnp.sin(9 * x_scaled))) * 5
 
 # --- Spiral Symmetry ---
 def spiral_symmetry(x, y, n_folds_raw, spiral_raw):
@@ -88,18 +90,19 @@ input_functions = dict(x=lambda x, y, p1, p2: x,
                        radial=lambda x, y, p1, p2: generalized_radial(x, y, freq_raw=p1, width_raw=p2),
                        angular=lambda x, y, p1, p2: angular_sinusoid(x, y, phase_raw=p1, amplitude_raw=p2),
                        grid=lambda x, y, p1, p2: grid(x, y, freq_raw=p1, alpha_raw=p2),
-                       spiral=lambda x, y, p1, p2: spiral_symmetry(x, y, n_folds_raw=p1, spiral_raw=p2))
-input_selector_mapping = ['x', 'y', 'symmetry', 'radial', 'angular', 'grid', 'spiral', 'y']
+                       spiral=lambda x, y, p1, p2: spiral_symmetry(x, y, n_folds_raw=p1, spiral_raw=p2),
+                       unif=lambda x, y, p1, p2: jnp.full_like(x, ((p1 / 1023.0) - 0.5) * 6))
+input_selector_mapping = ['x', 'y', 'symmetry', 'radial', 'angular', 'grid', 'spiral', 'unif']
 
 
 # param mapping
 
 # Mapping functions
-def zoom_mapping(value, vmin=0, vmax=1023, log_range=3.0):
+def zoom_mapping(value, vmin=0, vmax=1023, log_range=2.0):
     norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
     return 10 ** (norm * log_range)
 
-def bias_mapping(value, vmin=0, vmax=1023, range_=40.0):
+def bias_mapping(value, vmin=0, vmax=1023, range_=10.0):
     norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
     scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
     return range_ * scaled
@@ -108,19 +111,39 @@ def norm_value(value, magnitude):
     return value / 1023 - 0.5 * 2 * magnitude
 
 def weight_mapping(value, vmin=0, vmax=1023, range_=5.0):
+    # Normalize knob: [0..1023] → [-1..1]
     norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
-    scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
-    return range_ * scaled
 
-def slope_mapping(value, vmin=0, vmax=1023, range_=5.0):
-    norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
+    # Smooth nonlinear scaling (like your bias/contrast)
     scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
-    return range_ * scaled
 
-def contrast_mapping(value, vmin=0, vmax=1023, range_=5.0):
-    norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)
-    scaled = jnp.sign(norm) * (jnp.exp(jnp.abs(norm) * 3) - 1) / (jnp.exp(3) - 1)
-    return range_ * scaled
+    # Map: center=1, left→-range_, right→+range_
+    return 1 + scaled * (range_ - 1)
+
+
+
+def slope_mapping(value, vmin=0, vmax=1023, min_c=0.0, max_c=5.0, mid=1.0, exp_k=3.0):
+    norm = (value - vmin) / (vmax - vmin)
+    if norm <= 0.5:
+        t = norm / 0.5
+        scaled = (jnp.exp(t*exp_k)-1) / (jnp.exp(exp_k)-1)
+        return min_c + (mid - min_c) * scaled
+    else:
+        t = (norm - 0.5) / 0.5
+        scaled = (jnp.exp(t*exp_k)-1) / (jnp.exp(exp_k)-1)
+        return mid + (max_c - mid) * scaled
+
+def contrast_mapping(value, vmin=0, vmax=1023, min_c=0.0, max_c=5.0, mid=1.0, exp_k=3.0):
+    norm = (value - vmin) / (vmax - vmin)
+    if norm <= 0.5:
+        t = norm / 0.5
+        scaled = (jnp.exp(t*exp_k)-1) / (jnp.exp(exp_k)-1)
+        return min_c + (mid - min_c) * scaled
+    else:
+        t = (norm - 0.5) / 0.5
+        scaled = (jnp.exp(t*exp_k)-1) / (jnp.exp(exp_k)-1)
+        return mid + (max_c - mid) * scaled
+
 
 def balance_mapping(value, vmin=0, vmax=1023, range_=5.0):
     norm = (value - (vmin + vmax) / 2) / ((vmax - vmin) / 2)

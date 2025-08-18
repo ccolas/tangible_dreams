@@ -97,6 +97,7 @@ class CPPN:
         self.jitted_process_network = None
         self._init_jitted_functions()
         self.is_valid = False
+        self.last_update_saved = False
         # self.sample_network()
 
         self._x_in = None  # cached (N, n_inputs) on device
@@ -166,29 +167,30 @@ class CPPN:
             self.last_time = now
 
             # Smooth, pseudo-chaotic looping
-            a, b = 2.0, 3.1
+            a, b = 1.0, 2.1
             value = np.sin(a * now + np.sin(b * now + i) + i)  # in [-1, 1]
-            return value * 3
+            return value
         else:
             return None
 
     def update(self, res=None):
+        self.last_update_saved = False
         if res is None:
             res = self.default_res
-        if not self.is_valid:
-            self.needs_update = False
-            return self.error_screen[res]
-        else:
-            coords_x, coords_y = self.coords[res]
+        # if not self.is_valid:
+        #     self.needs_update = False
+        #     return self.error_screen[res]
+        # else:
+        coords_x, coords_y = self.coords[res]
 
-            key = self._inputs_key(res)
-            if (self._x_in is None) or (key != self._x_in_key):
-                self._x_in = self._compute_inputs(self.device_state, coords_x, coords_y)  # (N, n_in)
-                self._x_in_key = key
+        key = self._inputs_key(res)
+        if (self._x_in is None) or (key != self._x_in_key):
+            self._x_in = self._compute_inputs(self.device_state, coords_x, coords_y)  # (N, n_in)
+            self._x_in_key = key
 
-            img = self._run_cycles(self.device_state, self._x_in, coords_x)  # uint8 on device
-            self.needs_update = False
-            return img
+        img = self._run_cycles(self.device_state, self._x_in, coords_x)  # uint8 on device
+        self.needs_update = False
+        return img
 
     def _init_jitted_functions(self):
         n_in, n_h, n_out = self.n_inputs, self.n_hidden, self.n_outputs
@@ -213,7 +215,7 @@ class CPPN:
             gb_x = bias_mapping(state['input_params2'][self.x_id])
             gb_y = bias_mapping(state['input_params2'][self.y_id])
 
-            x = coords_x;
+            x = coords_x
             y = coords_y
             H, W = x.shape
             N = H * W
@@ -248,15 +250,16 @@ class CPPN:
             H, W = coords_x.shape
             N = H * W
 
+            active = state['node_active'][:, None]  # (n_nodes,1)
+
             # weights + mask (+ mods if cv_override enabled)
             Wts = (state['weights'] + state['weight_mods'] * state['cv_override'][None, :])
             Wts = (Wts * state['adj_matrix']).astype(jnp.float16)  # fp16 buffers; accumulate fp32
 
             # activations buffer: (n_nodes, N) bf16/fp16
             x = jnp.zeros((n_nodes, N), dtype=jnp.float16)
-            x = x.at[:n_in].set(x_in.T.astype(jnp.float16))
+            x = x.at[:n_in].set((x_in.T.astype(jnp.float16)) * active[:n_in])
 
-            active = state['node_active'][:, None]  # (n_nodes,1)
 
             def body(_, carry):
                 x, _net_prev = carry
@@ -274,6 +277,7 @@ class CPPN:
 
             out = net[n_in + n_h:n_in + n_h + n_out]
             out = (out + state['output_biases'][:, None]) * (state['output_slopes'][:, None] + state['output_slope_mods'][:, None])
+            out = out * active[n_in + n_h:n_in + n_h + n_out]
             out = jnp.clip(out, 0.0, 1.0)  # (n_out, N)
             img = (out.T * 255.0).astype(jnp.uint8).reshape(H, W, n_out)
             return img
@@ -386,17 +390,19 @@ class CPPN:
         return adj
 
     def save_state(self):
-        timestamp = self.timestamp
-        pkl_path = f"{self.output_path}/state_{timestamp}.pkl"
-        img_path = f"{self.output_path}/image_{timestamp}.png"
-        with open(pkl_path, 'wb') as f:
-            pickle.dump(self.state, f)
-        img = self.update(res=2048)  # uint8 on device
-        display_image = np.array(img)  # no *255 here
-        print(f'Checkpoints saved at {img_path}')
-        im = Image.fromarray(display_image)
-        im.save(img_path)
-        return img
+        if not self.last_update_saved:
+            timestamp = self.timestamp
+            pkl_path = f"{self.output_path}/state_{timestamp}.pkl"
+            img_path = f"{self.output_path}/image_{timestamp}.png"
+            with open(pkl_path, 'wb') as f:
+                pickle.dump(self.state, f)
+            img = self.update(res=2048)  # uint8 on device
+            display_image = np.array(img)  # no *255 here
+            print(f'Checkpoints saved at {img_path}')
+            im = Image.fromarray(display_image)
+            im.save(img_path)
+            self.last_update_saved = True
+            return img
 
     def _inputs_key(self, res=None):
         p1 = np.array(self.device_state['input_params1'])
