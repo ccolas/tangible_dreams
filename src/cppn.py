@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from viz import create_backend
 from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping
 from src.misc.error_screen import generate_error_screen
+from src.misc.compute_n_cycles import compute_rounds
 
 class CPPN:
     def __init__(self, output_path, params):
@@ -39,7 +40,7 @@ class CPPN:
         self.x_id = 4
         self.y_id = 3
         self.n_nodes = self.n_inputs + self.n_hidden + self.n_outputs
-        self.n_cycles = 3
+        self.n_cycles = 1
 
         self.input_ids = list(range(0, self.n_inputs))
         self.middle_ids = list(range(self.n_inputs, self.n_inputs + self.n_hidden))
@@ -98,7 +99,6 @@ class CPPN:
         self._init_jitted_functions()
         self.is_valid = False
         self.last_update_saved = False
-        # self.sample_network()
 
         self._x_in = None  # cached (N, n_inputs) on device
         self._x_in_key = None  # small host tuple to know when to invalidate
@@ -129,38 +129,6 @@ class CPPN:
         state['input_function_ids'] = state['input_function_ids'].at[self.y_id].set(1)
         return state
 
-
-
-    # def update_cam(self, res=None):
-    #     if res is None:
-    #         res = self.default_res
-    #     # TODO: find something better here
-    #     if self.cam_input:
-    #         now = self.time
-    #         if now - self.last_time > self.update_period:
-    #             target_shape = self.img_shapes[res]
-    #             ret, frame = self.cam.read()
-    #             if not ret:
-    #                 return
-    #
-    #             # Flip for mirror view
-    #             gray = cv2.flip(cv2.cvtColor(cv2.flip(frame, 1), cv2.COLOR_BGR2GRAY), 1)
-    #
-    #             # Denoise with Gaussian blur
-    #             k = 11
-    #             sigma = 1
-    #             blurred = cv2.GaussianBlur(gray, (k, k), sigma)
-    #             blurred = cv2.resize(blurred, (target_shape[1], target_shape[0]))  # W x H
-    #
-    #             grad_x = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
-    #             grad_y = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
-    #             grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-    #             self.cam_img = grad_mag / (grad_mag.max() + 1e-6)
-    #
-    #             # self.cam_img = discretized.astype(np.float32)
-    #             self.needs_update = True
-    #             self.last_time = now
-
     def reactive_update(self, i):
         now = self.time
         if now - self.last_time > self.update_period:
@@ -177,10 +145,6 @@ class CPPN:
         self.last_update_saved = False
         if res is None:
             res = self.default_res
-        # if not self.is_valid:
-        #     self.needs_update = False
-        #     return self.error_screen[res]
-        # else:
         coords_x, coords_y = self.coords[res]
 
         key = self._inputs_key(res)
@@ -188,7 +152,7 @@ class CPPN:
             self._x_in = self._compute_inputs(self.device_state, coords_x, coords_y)  # (N, n_in)
             self._x_in_key = key
 
-        img = self._run_cycles(self.device_state, self._x_in, coords_x)  # uint8 on device
+        img = self._run_cycles(self.device_state, self._x_in, coords_x, self.n_cycles)  # uint8 on device
         self.needs_update = False
         return img
 
@@ -202,6 +166,7 @@ class CPPN:
         from jax import jit, lax
         import jax
         import jax.numpy as jnp
+
 
         @jit
         def _basis_switch(fn_id, x, y, p1, p2):
@@ -245,7 +210,7 @@ class CPPN:
             return jax.vmap(f, in_axes=(0, 0))(act_ids, vals)
 
         @jit
-        def _run_cycles(state, x_in, coords_x):
+        def _run_cycles(state, x_in, coords_x, n_cycles):
             # x_in: (N, n_in); produce uint8 image
             H, W = coords_x.shape
             N = H * W
@@ -261,7 +226,7 @@ class CPPN:
             x = x.at[:n_in].set((x_in.T.astype(jnp.float16)) * active[:n_in])
 
 
-            def body(_, carry):
+            def body(i, carry):
                 x, _net_prev = carry
                 net = jnp.matmul(Wts.T.astype(jnp.float32), x.astype(jnp.float32))  # (n_nodes,N)
 
@@ -273,7 +238,7 @@ class CPPN:
                 return (x, net)
 
             net0 = jnp.zeros((n_nodes, N), dtype=jnp.float32)
-            x, net = lax.fori_loop(0, self.n_cycles, body, (x, net0))
+            x, net = lax.fori_loop(0, n_cycles, body, (x, net0))
 
             out = net[n_in + n_h:n_in + n_h + n_out]
             out = (out + state['output_biases'][:, None]) * (state['output_slopes'][:, None] + state['output_slope_mods'][:, None])
@@ -287,107 +252,115 @@ class CPPN:
         self._x_in = None
         self._x_in_key = None
 
-    def sample_network(self):
-        while True:
-            np_adj_matrix = self.sample_adj_matrix()
-            G = nx.DiGraph(np_adj_matrix)
+    def update_cycles_if_needed(self):
+        """Call when topology changes"""
+        adj = self.device_state['adj_matrix'] & self.device_state['node_active'][:, None] & self.device_state['node_active'][None, :]
+        self.n_cycles, _ = compute_rounds(adj, self.n_inputs, self.n_outputs, settling_count=1)
+        print(f'Setting n_cycles to {self.n_cycles}')
 
-            # Ensure at least one input→output path
-            if not any(nx.has_path(G, i, o) for i in self.input_ids for o in self.output_ids):
-                continue
 
-            # Ensure every hidden node lies on some input→hidden→output path
-            all_hidden_connected = True
-            for h in self.middle_ids:
-                if not any(nx.has_path(G, i, h) for i in self.input_ids):
-                    all_hidden_connected = False
-                    break
-                if not any(nx.has_path(G, h, o) for o in self.output_ids):
-                    all_hidden_connected = False
-                    break
+    # def sample_network(self):
+    #     while True:
+    #         np_adj_matrix = self.sample_adj_matrix()
+    #         G = nx.DiGraph(np_adj_matrix)
+    #
+    #         # Ensure at least one input→output path
+    #         if not any(nx.has_path(G, i, o) for i in self.input_ids for o in self.output_ids):
+    #             continue
+    #
+    #         # Ensure every hidden node lies on some input→hidden→output path
+    #         all_hidden_connected = True
+    #         for h in self.middle_ids:
+    #             if not any(nx.has_path(G, i, h) for i in self.input_ids):
+    #                 all_hidden_connected = False
+    #                 break
+    #             if not any(nx.has_path(G, h, o) for o in self.output_ids):
+    #                 all_hidden_connected = False
+    #                 break
+    #
+    #         if all_hidden_connected:
+    #             break
+    #
+    #     # # Reorder nodes: inputs first, then acyclic hidden nodes, then cyclic hidden nodes, then outputs
+    #     # ordered = list(self.input_ids)
+    #     # available = set(self.middle_ids)
+    #     #
+    #     # while available:
+    #     #     added = False
+    #     #     for node in sorted(available):
+    #     #         sources = np.where(np_adj_matrix[:, node])[0]
+    #     #         if all(s in ordered for s in sources):
+    #     #             ordered.append(node)
+    #     #             available.remove(node)
+    #     #             added = True
+    #     #             break
+    #     #     if not added:
+    #     #         break  # cycle detected
+    #     #
+    #     # cyclic_start = len(ordered)
+    #     # ordered.extend(sorted(available))  # cyclic hidden nodes
+    #     # ordered.extend(self.output_ids)
+    #
+    #     # # Apply node reordering to adj matrix
+    #     # reordered_adj = np.zeros_like(np_adj_matrix)
+    #     # for i, old_i in enumerate(ordered):
+    #     #     for j, old_j in enumerate(ordered):
+    #     #         reordered_adj[i, j] = np_adj_matrix[old_i, old_j]
+    #
+    #     # Finalize
+    #     key = random.PRNGKey(int(time.time()))
+    #     jnp_adj_matrix = jnp.array(np_adj_matrix).astype(jnp.bool_)
+    #     self.device_state['weights'] = jax.device_put((random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * jnp_adj_matrix).astype(jnp.float16)
+    #     self.device_state['activation_ids'] = jax.device_put(jnp.array(np.random.randint(0, len(self.activations), size=self.n_hidden), dtype=jnp.int32))
+    #     self.device_state['adj_matrix'] = jax.device_put(jnp_adj_matrix)
+    #     # self.cyclic_start = cyclic_start
+    #     self.needs_update = True
+    #     self.is_valid = self.is_network_valid()
+    #     print(f"[CPPN] Sampled new network")
 
-            if all_hidden_connected:
-                break
+    # def is_network_valid(self):
+    #     """Fast connectivity check directly on JAX array"""
+    #     # Get active node mask
+    #     active_mask = self.device_state['node_active']
+    #
+    #     # Mask the adjacency matrix - only connections between active nodes are valid
+    #     # If either source or target node is inactive, the connection is invalid
+    #     masked_adj = (self.device_state['adj_matrix'] &
+    #                   active_mask[:, None] &  # source node must be active
+    #                   active_mask[None, :])  # target node must be active
+    #
+    #     # Compute transitive closure on masked adjacency matrix
+    #     reachable = masked_adj > 0
+    #     prev = jnp.zeros_like(reachable, dtype=jnp.bool_)
+    #
+    #     while not jnp.array_equal(reachable, prev):
+    #         prev = reachable
+    #         reachable = (reachable @ reachable) | reachable
+    #
+    #     # Check input -> output connectivity (only among active nodes)
+    #     output_start = self.n_inputs + self.n_hidden
+    #     active_inputs = active_mask[:self.n_inputs]
+    #     active_outputs = active_mask[output_start:]
+    #
+    #     # Only check paths from active inputs to active outputs
+    #     valid_paths = reachable[:self.n_inputs, output_start:] & active_inputs[:, None] & active_outputs[None, :]
+    #
+    #     return bool(jnp.any(valid_paths))
+    #
+    # def sample_adj_matrix(self):
+    #     adj = np.zeros((self.n_nodes, self.n_nodes))
+    #     for i in range(self.n_inputs + self.n_hidden):  # no output→anything
+    #         for j in range(self.n_inputs, self.n_nodes):
+    #             if i == 0 or i == 1:
+    #                 continue
+    #             if i in self.input_ids and j in self.output_ids:
+    #                 continue
+    #             # Allow cycles: no j > i restriction
+    #             prob = 0.4 if j >= self.n_inputs + self.n_hidden else 0.2  # prioritize middle→output
+    #             if np.random.rand() < prob:
+    #                 adj[i, j] = 1
+    #     return adj
 
-        # # Reorder nodes: inputs first, then acyclic hidden nodes, then cyclic hidden nodes, then outputs
-        # ordered = list(self.input_ids)
-        # available = set(self.middle_ids)
-        #
-        # while available:
-        #     added = False
-        #     for node in sorted(available):
-        #         sources = np.where(np_adj_matrix[:, node])[0]
-        #         if all(s in ordered for s in sources):
-        #             ordered.append(node)
-        #             available.remove(node)
-        #             added = True
-        #             break
-        #     if not added:
-        #         break  # cycle detected
-        #
-        # cyclic_start = len(ordered)
-        # ordered.extend(sorted(available))  # cyclic hidden nodes
-        # ordered.extend(self.output_ids)
-
-        # # Apply node reordering to adj matrix
-        # reordered_adj = np.zeros_like(np_adj_matrix)
-        # for i, old_i in enumerate(ordered):
-        #     for j, old_j in enumerate(ordered):
-        #         reordered_adj[i, j] = np_adj_matrix[old_i, old_j]
-
-        # Finalize
-        key = random.PRNGKey(int(time.time()))
-        jnp_adj_matrix = jnp.array(np_adj_matrix).astype(jnp.bool_)
-        self.device_state['weights'] = jax.device_put((random.uniform(key, (self.n_nodes, self.n_nodes)) * 2 - 1) * jnp_adj_matrix).astype(jnp.float16)
-        self.device_state['activation_ids'] = jax.device_put(jnp.array(np.random.randint(0, len(self.activations), size=self.n_hidden), dtype=jnp.int32))
-        self.device_state['adj_matrix'] = jax.device_put(jnp_adj_matrix)
-        # self.cyclic_start = cyclic_start
-        self.needs_update = True
-        self.is_valid = self.is_network_valid()
-        print(f"[CPPN] Sampled new network")
-
-    def is_network_valid(self):
-        """Fast connectivity check directly on JAX array"""
-        # Get active node mask
-        active_mask = self.device_state['node_active']
-
-        # Mask the adjacency matrix - only connections between active nodes are valid
-        # If either source or target node is inactive, the connection is invalid
-        masked_adj = (self.device_state['adj_matrix'] &
-                      active_mask[:, None] &  # source node must be active
-                      active_mask[None, :])  # target node must be active
-
-        # Compute transitive closure on masked adjacency matrix
-        reachable = masked_adj > 0
-        prev = jnp.zeros_like(reachable, dtype=jnp.bool_)
-
-        while not jnp.array_equal(reachable, prev):
-            prev = reachable
-            reachable = (reachable @ reachable) | reachable
-
-        # Check input -> output connectivity (only among active nodes)
-        output_start = self.n_inputs + self.n_hidden
-        active_inputs = active_mask[:self.n_inputs]
-        active_outputs = active_mask[output_start:]
-
-        # Only check paths from active inputs to active outputs
-        valid_paths = reachable[:self.n_inputs, output_start:] & active_inputs[:, None] & active_outputs[None, :]
-
-        return bool(jnp.any(valid_paths))
-
-    def sample_adj_matrix(self):
-        adj = np.zeros((self.n_nodes, self.n_nodes))
-        for i in range(self.n_inputs + self.n_hidden):  # no output→anything
-            for j in range(self.n_inputs, self.n_nodes):
-                if i == 0 or i == 1:
-                    continue
-                if i in self.input_ids and j in self.output_ids:
-                    continue
-                # Allow cycles: no j > i restriction
-                prob = 0.4 if j >= self.n_inputs + self.n_hidden else 0.2  # prioritize middle→output
-                if np.random.rand() < prob:
-                    adj[i, j] = 1
-        return adj
 
     def save_state(self):
         if not self.last_update_saved:
@@ -437,6 +410,37 @@ class CPPN:
     @property
     def time(self):
         return time.time() - self.t_start
+
+    def print_connections(self):
+        """Print adjacency matrix as readable text"""
+        adj = np.array(self.device_state['adj_matrix'])
+        active = np.array(self.device_state['node_active'])
+
+        print("Network Connections:")
+        print("-" * 40)
+
+        for i in range(self.n_nodes):
+            # Find all nodes that node i connects to
+            connections = np.where(adj[i, :] == 1)[0]
+
+            if len(connections) > 0:  # Skip nodes with no outgoing connections
+                # Determine node type
+                if i < self.n_inputs:
+                    node_type = "Input"
+                elif i < self.n_inputs + self.n_hidden:
+                    node_type = "Hidden"
+                else:
+                    node_type = "Output"
+
+                # Show active status
+                status = "ACTIVE" if active[i] else "INACTIVE"
+
+                # Format connection list
+                conn_list = ", ".join([str(c+1) for c in connections])
+
+                print(f"{node_type} {i+1} ({status}) → [{conn_list}]")
+
+        print("-" * 40)
 
 
 

@@ -31,7 +31,7 @@ uint16_t newValues[ACTIVE_COUNT];
 bool     changed[ACTIVE_COUNT];
 
 // -------- Helpers
-static inline void txBegin() { digitalWrite(RS485_DE, HIGH); delayMicroseconds(100); }
+static inline void txBegin() { digitalWrite(RS485_DE, HIGH); delayMicroseconds(50); }
 static inline void txEnd()   { bus.flush(); digitalWrite(RS485_DE, LOW); bus.listen(); }
 
 uint8_t mapToChoice(uint16_t value, uint8_t numChoices) {
@@ -60,6 +60,7 @@ void setup() {
 
   // init lastValues to "unset"
   for (uint8_t i = 0; i < ACTIVE_COUNT; i++) lastValues[i] = 0xFFFF;
+  ADCSRA = (ADCSRA & 0xF8) | 0x07;  // prescaler 128 (~100μs per read)
 }
 
 void readInputs() {

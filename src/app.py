@@ -64,7 +64,7 @@ async def main():
             await asyncio.sleep(0.00016)
 
     except KeyboardInterrupt:
-        vis.cleanup()
+        viz.cleanup()
 
 
 if __name__ == "__main__":

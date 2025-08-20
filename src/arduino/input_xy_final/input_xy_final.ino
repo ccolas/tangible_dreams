@@ -32,7 +32,7 @@ bool     changed[ACTIVE_COUNT];
 static uint32_t lastSample = 0; // for on/off LED refresh
 
 // -------- Helpers
-static inline void txBegin() { digitalWrite(RS485_DE, HIGH); delayMicroseconds(100); }
+static inline void txBegin() { digitalWrite(RS485_DE, HIGH); delayMicroseconds(50); }
 static inline void txEnd()   { bus.flush(); digitalWrite(RS485_DE, LOW); bus.listen(); }
 
 uint8_t mapToChoice(uint16_t value, uint8_t numChoices) {
@@ -57,6 +57,7 @@ void setup() {
   delay(100);
 
   for (uint8_t i = 0; i < ACTIVE_COUNT; i++) lastValues[i] = 0xFFFF;
+  ADCSRA = (ADCSRA & 0xF8) | 0x07;  // prescaler 128 (~100μs per read)
 }
 
 void readInputs() {

@@ -21,18 +21,20 @@ class RS485Controller:
         self.port = params.get('port', '/dev/ttyUSB0')
         self.baud = 115200
         self.update_timeout = 0.004
-        self.total_timeout = 0.1
+        self.total_timeout = 0.15
         self.update_max_retries = 5
         # self.full_refresh_rate = 5
-        self.node_ids = [1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17]
-        self.command = 0x01  # ask for full data
+        self.node_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        # self.command = 0x01  # ask for full data
+        self.command_sent_with_last_update = [None for _ in range(len(self.node_ids))]
+        self.last_change_time = time.time()
         self.start_byte = 0xAA
         self.end_byte = 0xBB
         self.sync_byte = 0xCC
 
         # identify node ids
         self.input_ids = [1, 2, 3, 4, 5]
-        self.middle_ids = [7, 9, 10, 11, 12, 13, 14]
+        self.middle_ids = [6, 7, 8, 9, 10, 11, 12, 13, 14]
         self.output_ids = [15, 16, 17]
         # self.real_nodes = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 ,17]
 
@@ -60,8 +62,8 @@ class RS485Controller:
 
     async def start_polling_loop(self):
         print('Starting RS845', flush=True)
-        parsed_once = False
-        with serial.Serial(self.port, self.baud, timeout=self.total_timeout, write_timeout=0) as ser:
+        self.parsed_once = False
+        with serial.Serial(self.port, self.baud, timeout=0, write_timeout=0) as ser:
             ser.inter_byte_timeout = 0
             ser.reset_input_buffer()
             ser.reset_output_buffer()
@@ -74,23 +76,16 @@ class RS485Controller:
                 self.handle_update(changes)
                 t_update = time.time()
                 if len(changes) > 0:
-                    if not parsed_once: parsed_once = True
+                    self.last_change_time = time.time()
+                    if not self.parsed_once: self.parsed_once = True
                     time_poll = (t_poll - t_init) * 1000
                     time_update = (t_update - t_poll) * 1000
-                    print(f'control time: poll={time_poll:.2f}ms, update={time_update:.2f}, attempts={i_attempts}')
-                if self.command == 0x01 and parsed_once: self.command = 0x00  # ask for updates only
+                    # print(f'control time: poll={time_poll:.2f}ms, update={time_update:.2f}, attempts={i_attempts}')
+                # if self.command == 0x01 and parsed_once: self.command = 0x00  # ask for updates only
                 await asyncio.sleep(0.00016)  # match main loop timing
 
-    @property
-    def timeout(self):
-        return self.total_timeout if self.command == 0x01 else self.update_timeout
-
-    @property
-    def max_retries(self):
-        return self.update_max_retries * 2 if self.command == 0x01 else self.update_max_retries
-
     def start(self):
-        parsed_once = False
+        self.parsed_once = False
         with serial.Serial(self.port, self.baud, timeout=self.total_timeout) as ser:
             ser.reset_input_buffer()
             ser.reset_output_buffer()
@@ -100,9 +95,8 @@ class RS485Controller:
                 changes, i_attempts = self.poll_nodes(ser)
                 self.handle_update(changes)
                 print(f"  took: {(time.time() - t_init)/1e3:.2f}ms, attempts:{i_attempts}", flush=True)
-                if len(changes) > 0 and not parsed_once:
-                    parsed_once = True
-                if self.command == 0x01 and parsed_once: self.command = 0x00  # ask for updates only
+                if len(changes) > 0 and not self.parsed_once:
+                    self.parsed_once = True
 
     def poll_nodes(self, ser):
         all_changes = {}
@@ -110,9 +104,18 @@ class RS485Controller:
         for node_id in self.node_ids:
             i_attempt = 0
             parsed = None
-            while i_attempt <= self.max_retries:
+            if not self.parsed_once:#or (time.time() - self.last_change_time > 1 and self.command_sent_with_last_update[node_id-1] == 0x00):
+                command = 0x01
+                timeout = self.total_timeout
+                max_retries = self.update_max_retries * 2
+            else:
+                command = 0x00
+                timeout = self.update_timeout
+                max_retries = self.update_max_retries
+
+            while i_attempt <= max_retries:
                 i_attempt += 1
-                buffer = self.poll_single_node(ser, node_id)
+                buffer = self.poll_single_node(ser, node_id, command, timeout)
                 if buffer:
                     _, parsed = self.parse_node_response(buffer)
                     if parsed is not None:
@@ -120,21 +123,23 @@ class RS485Controller:
             if parsed is not None:
                 if len(parsed) > 0:
                     all_changes[node_id] = parsed
+                    self.command_sent_with_last_update[node_id - 1] = command
             else:
-                print(f"[FAIL] Node {node_id} (after {self.max_retries} attempts)")
+                print(f"[FAIL] Node {node_id} (after {max_retries} attempts)")
             i_attempts.append(i_attempt)
 
         return all_changes, i_attempts
 
-    def poll_single_node(self, ser, node_id):
+    def poll_single_node(self, ser, node_id, command, timeout):
+
         ser.reset_input_buffer()
-        ser.write(bytes([self.sync_byte, node_id, self.command]))
+        ser.write(bytes([self.sync_byte, node_id, command]))
 
         buffer = bytearray()
         reading = False
         start_time = time.time()
 
-        while time.time() - start_time < self.timeout:
+        while time.time() - start_time < timeout:
             byte = ser.read()
             if not byte:
                 continue
@@ -238,6 +243,7 @@ class RS485Controller:
                     elif sensor_id == 8:
                         print(f'  active: {sensor_value}')
                         self.cppn.device_state['node_active'] = self.cppn.device_state['node_active'].at[node_idx].set(bool(sensor_value))
+                        graph_changed = True
                     else:
                         raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
 
@@ -346,6 +352,7 @@ class RS485Controller:
                         print(f'  changing slope value: {slope}')
                     elif sensor_id == 8:
                         self.cppn.device_state['node_active'] = self.cppn.device_state['node_active'].at[node_idx].set(bool(sensor_value))
+                        graph_changed = True
                         if sensor_value:
                             print('  activating node')
                         else:
@@ -459,6 +466,7 @@ class RS485Controller:
                         print(f'  changing contrast value: {slope}')
                     elif sensor_id == 8:
                         self.cppn.device_state['node_active'] = self.cppn.device_state['node_active'].at[node_idx].set(bool(sensor_value))
+                        graph_changed = True
                         if sensor_value:
                             print('  activating node')
                         else:
@@ -468,10 +476,9 @@ class RS485Controller:
                     else:
                         raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
 
-        # if graph_changed:
-        #     self.cppn.is_valid = self.cppn.is_network_valid()
-        #     if not self.cppn.is_valid:
-        #         print('NO PATH')
+        if graph_changed:
+            self.cppn.update_cycles_if_needed()
+
 
         if len(changes) > 0:
             self.cppn.needs_update = True

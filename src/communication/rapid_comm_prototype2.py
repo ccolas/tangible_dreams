@@ -9,11 +9,12 @@ BAUD = 115200
 START_BYTE = 0xAA
 END_BYTE = 0xBB
 TIMEOUT = 0.004  # 4ms
-TIMEOUT_TOTAL = 0.1
+TIMEOUT_TOTAL = 0.15
 MAX_RETRIES = 3
 RUNS = 3000000
-NODES = [1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+NODES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 NODES_TO_PLOT = NODES
+
 
 # dmesg | grep tty
 def ensure_low_latency(port_path):
@@ -85,9 +86,10 @@ def parse_node_response(data):
 
 
 def poll_single_node(ser, node_id, command, timeout):
+    t_start = time.time()
     ser.reset_input_buffer()
     ser.write(bytes([0xCC, node_id, command]))
-
+    t_sent = time.time()
     buffer = bytearray()
     reading = False
     start_time = time.time()
@@ -105,7 +107,8 @@ def poll_single_node(ser, node_id, command, timeout):
             break
         elif reading:
             buffer.append(byte)
-
+    t_received = time.time()
+    # print(f"Node {node_id} - TX: {(t_sent-t_start)*1000:.2f}ms, RX: {(t_received-t_sent)*1000:.2f}ms")
     if len(buffer) >= 2:
         return buffer  # buffer includes: [node_id, flag, payload...]
     return None
@@ -113,9 +116,10 @@ def poll_single_node(ser, node_id, command, timeout):
 # === POLL ALL NODES ===
 def poll_nodes():
     PARSED_ONCE = False
-    with serial.Serial(PORT, BAUD, timeout=TIMEOUT) as ser:
+    with serial.Serial(PORT, BAUD,  timeout=0, write_timeout=0) as ser:
         ser.reset_input_buffer()
         ser.reset_output_buffer()
+        ser.inter_byte_timeout = None
         time.sleep(0.1)  # Give Arduino time to settle
         run = 0
         while True:

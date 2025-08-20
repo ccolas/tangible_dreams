@@ -109,6 +109,9 @@ class ModernGLBackend:
                 import asyncio
                 from src.github_save import save_and_push
                 asyncio.create_task(save_and_push(self.cppn))
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_n and self.cppn:
+                self.cppn.print_connections()
+
 
     def cleanup(self):
         pygame.quit()

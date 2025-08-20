@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // --- Node id
-#define NODE_ID 6
+#define NODE_ID 10
 
 // --- Pin mapping (hardware)
 #define AIN0          A0   // -> proto 0 (binned)
@@ -28,6 +28,9 @@ SoftwareSerial bus(RS485_RX, RS485_TX);
 #define NUM_ACTIVS 8
 #define ANALOG_THRESHOLD 5
 
+// Add after other globals
+uint32_t t_start, t_inputs, t_format, t_send;
+
 // --- Active protocol pin indices (0..9 all used)
 const uint8_t ACTIVE_PINS[] = {0,1,2,3,4,5,6,7,8,9};
 const uint8_t ACTIVE_COUNT = sizeof(ACTIVE_PINS)/sizeof(ACTIVE_PINS[0]);
@@ -41,7 +44,7 @@ bool cvLast = false;
 uint8_t cvState = 0;
 
 // --- Helpers
-static inline void txBegin(){ digitalWrite(RS485_DE, HIGH); delayMicroseconds(100); }
+static inline void txBegin(){ digitalWrite(RS485_DE, HIGH); delayMicroseconds(50); }
 static inline void txEnd(){ bus.flush(); digitalWrite(RS485_DE, LOW); bus.listen(); }
 
 uint8_t mapToChoice(uint16_t v, uint8_t n){
@@ -69,6 +72,7 @@ int idxForPin(uint8_t p){
 static uint32_t lastSample = 0; // for on/off led update
 
 void setup(){
+  // Serial.begin(115200);  // ADD THIS LINE
   pinMode(RS485_DE, OUTPUT);
   pinMode(ON_OFF_SWITCH, INPUT_PULLUP);
   pinMode(CV_SWITCH, INPUT_PULLUP);
@@ -81,6 +85,7 @@ void setup(){
 
   for(uint8_t i=0;i<ACTIVE_COUNT;i++) lastValues[i]=0xFFFF;
   DIDR0 |= _BV(ADC0D)|_BV(ADC1D)|_BV(ADC2D)|_BV(ADC3D)|_BV(ADC4D)|_BV(ADC5D);
+  ADCSRA = (ADCSRA & 0xF8) | 0x07;  // prescaler 128 (~100μs per read)
 }
 
 int readStable(uint8_t pin){
@@ -90,11 +95,6 @@ int readStable(uint8_t pin){
 }
 
 void readInputs(){
-  // A0–A2 -> custom bins (proto 0..2)
-  // clear buffer first?
-  // analogRead(AIN0);
-  // delayMicroseconds(10);            // try 10 µs; raise if needed
-
   // A3–A6 raw analog (proto 3..6)
   newValues[idxForPin(3)] = analogRead(AIN3);
   newValues[idxForPin(4)] = analogRead(AIN4);
@@ -140,7 +140,11 @@ void loop(){
   uint8_t command = bus.read();
   if(nodeId != NODE_ID) return;
 
+  // t_start = micros();  // START TIMING
+
   readInputs();
+  
+  // t_inputs = micros();  // AFTER INPUT READING
 
   bool forceSend = (command==0x01);
   uint8_t changeCount=0;
@@ -174,7 +178,7 @@ void loop(){
    // these may be needed when CV becomes actual reading from A0 to control A4
    //   if (changed[idxForPin(9)] && !changed[idxForPin(0)]) { changed[idxForPin(0)] = true; changeCount++; }
    //   if (changed[idxForPin(9)] && !changed[idxForPin(3)]) { changed[idxForPin(3)] = true; changeCount++; }
-
+  // t_format = micros();  // AFTER CHANGE DETECTION
   txBegin();
   bus.write(0xAA);
   bus.write(nodeId);
@@ -198,5 +202,12 @@ void loop(){
   }
 
   bus.write(0xBB);
+  // t_send = micros();    // AFTER SERIAL SEND
   txEnd();
+  // if(changeCount > 0) {
+  //   Serial.print("inputs:");  Serial.print(t_inputs - t_start);
+  //   Serial.print(" format:"); Serial.print(t_format - t_inputs);
+  //   Serial.print(" send:");   Serial.print(t_send - t_format);
+  //   Serial.print(" total:");  Serial.println(t_send - t_start);
+  // }
 }
