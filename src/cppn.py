@@ -99,9 +99,10 @@ class CPPN:
         self._init_jitted_functions()
         self.is_valid = False
         self.last_update_saved = False
-
+        self.reactive_states = {i: {} for i in range(self.n_nodes)}
         self._x_in = None  # cached (N, n_inputs) on device
         self._x_in_key = None  # small host tuple to know when to invalidate
+        self.weights_1_raw = np.zeros([self.n_nodes])
 
         if params.get('load_from'):
             self.set_state(state_path=params['load_from'])
@@ -129,17 +130,58 @@ class CPPN:
         state['input_function_ids'] = state['input_function_ids'].at[self.y_id].set(1)
         return state
 
-    def reactive_update(self, i):
+    def reactive_update(self, i, w):
+        """
+        Reactive function per node.
+        - i: node index (0-based)
+        - w: normalized control in [0,1] from weight 1 (sensor value / 1023)
+        """
+        w /= 1023
         now = self.time
-        if now - self.last_time > self.update_period:
-            self.last_time = now
-
-            # Smooth, pseudo-chaotic looping
-            a, b = 1.0, 2.1
-            value = np.sin(a * now + np.sin(b * now + i) + i)  # in [-1, 1]
-            return value
-        else:
+        if now - self.last_time <= self.update_period:
             return None
+        self.last_time = now
+
+        period = 4.0
+        omega = 2 * np.pi / period
+        A = 1.0 * w
+
+        # === Outputs: all same simple sine ===
+        if i in self.output_ids:
+            return A * np.sin(omega * now)
+
+        # === Middles: 9 different dynamics ===
+        idx = i - self.n_inputs  # 0..8
+        state = self.reactive_states[i]
+
+        if idx == 0:  # sine
+            return A * np.sin(omega * now + idx)
+        elif idx == 1:  # cosine
+            return A * np.cos(omega * now + idx)
+        elif idx == 2:  # sawtooth
+            phase = (now / period) % 1.0
+            return A * (2 * phase - 1)
+        elif idx == 3:  # square
+            return A * np.sign(np.sin(omega * now))
+        elif idx == 4:  # triangle
+            phase = (now / period) % 1.0
+            tri = 2 * abs(2 * phase - 1) - 1
+            return A * tri
+        elif idx == 5:  # logistic map (chaotic)
+            phase = 2 * np.pi * w * now / 20.0  # 20s drift cycle
+            val = np.sin(omega * now + phase)
+            return A * val
+        elif idx == 6:  # noisy drift
+            val = state.get('val', 0.0)
+            val = 0.95 * val + 0.05 * np.random.uniform(-1, 1)
+            state['val'] = val
+            return A * val
+        elif idx == 7:  # lissajous style
+            return A * (np.sin(omega * now) * np.cos(omega * now + idx))
+        elif idx == 8:  # pulse train
+            return A if (int(now / period) % 2 == 0) else 0.0
+
+        return 0.0
 
     def update(self, res=None):
         self.last_update_saved = False
@@ -256,6 +298,7 @@ class CPPN:
         """Call when topology changes"""
         adj = self.device_state['adj_matrix'] & self.device_state['node_active'][:, None] & self.device_state['node_active'][None, :]
         self.n_cycles, _ = compute_rounds(adj, self.n_inputs, self.n_outputs, settling_count=1)
+        if self.n_cycles is None: self.n_cycles = 1
         print(f'Setting n_cycles to {self.n_cycles}')
 
 

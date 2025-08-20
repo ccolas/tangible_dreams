@@ -340,6 +340,8 @@ class RS485Controller:
                             self.cppn.device_state['weights'] = self.cppn.device_state['weights'].at[source_idx, node_idx].set(weight)
                             if self.cppn.device_state['adj_matrix'][source_idx, node_idx]:
                                 print(f'  update weight {input_idx + 1} modulating source {source_idx + 1}: {weight}')
+                        self.cppn.weights_1_raw[node_idx] = sensor_value
+
 
                     elif sensor_id == 7:
                         activ_id = sensor_value
@@ -456,6 +458,7 @@ class RS485Controller:
                             self.cppn.device_state['weights'] = self.cppn.device_state['weights'].at[source_idx, node_idx].set(weight)
                             if self.cppn.device_state['adj_matrix'][source_idx, node_idx]:
                                 print(f'  update weight {input_idx + 1} modulating source {source_idx + 1}: {sensor_value}, {weight}')
+                        self.cppn.weights_1_raw[node_idx] = sensor_value
                     elif sensor_id == 6:
                         bias = balance_mapping(sensor_value)
                         self.cppn.device_state['output_biases'] = self.cppn.device_state['output_biases'].at[output_idx].set(bias)
@@ -486,8 +489,10 @@ class RS485Controller:
         # update cv
         for node_idx in range(self.cppn.n_inputs, self.cppn.n_nodes):
             if self.cppn.device_state['cv_override'][node_idx]:
+                weight1 = self.cppn.weights_1_raw[node_idx]
+
                 # update weight of second input
-                weight2 = self.cppn.reactive_update(node_idx)
+                weight2 = self.cppn.reactive_update(node_idx, weight1)
                 if weight2 is not None:
                     # find node connected in input 2
                     source2_idx = self.cppn.inputs_nodes_record[node_idx, 1]
