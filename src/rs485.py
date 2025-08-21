@@ -104,22 +104,27 @@ class RS485Controller:
         for node_id in self.node_ids:
             i_attempt = 0
             parsed = None
-            if not self.parsed_once:#or (time.time() - self.last_change_time > 1 and self.command_sent_with_last_update[node_id-1] == 0x00):
+            if not self.parsed_once:
                 command = 0x01
                 timeout = self.total_timeout
                 max_retries = self.update_max_retries * 2
+            elif (time.time() - self.last_change_time > 1 and self.command_sent_with_last_update[node_id-1] == 0x00 and (node_id - 1) >= self.cppn.n_inputs):
+                command = 0x02
+                timeout = self.total_timeout
+                max_retries = self.update_max_retries
             else:
                 command = 0x00
                 timeout = self.update_timeout
                 max_retries = self.update_max_retries
-
             while i_attempt <= max_retries:
                 i_attempt += 1
                 buffer = self.poll_single_node(ser, node_id, command, timeout)
                 if buffer:
-                    _, parsed = self.parse_node_response(buffer)
+                    _, parsed = self.parse_node_response(buffer, command)
                     if parsed is not None:
                         break
+                if command == 0x01:
+                    timeout += 0.01
             if parsed is not None:
                 if len(parsed) > 0:
                     all_changes[node_id] = parsed
@@ -133,6 +138,7 @@ class RS485Controller:
     def poll_single_node(self, ser, node_id, command, timeout):
 
         ser.reset_input_buffer()
+        if command == 0x02: command = 0x01
         ser.write(bytes([self.sync_byte, node_id, command]))
 
         buffer = bytearray()
@@ -158,7 +164,7 @@ class RS485Controller:
 
         return None
 
-    def parse_node_response(self, data):
+    def parse_node_response(self, data, command):
         if len(data) < 2:
             return None, None
 
@@ -191,7 +197,8 @@ class RS485Controller:
                     index += 1
                 else:
                     return None, None
-                parsed[pin] = value
+                if command != 0x02 or pin < 3:  # with command 0x02 (update), only update input jacks
+                    parsed[pin] = value
             return node_id, parsed
 
         return None, None

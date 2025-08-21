@@ -1,15 +1,16 @@
 import moderngl
 import numpy as np
-# import cv2
-import jax.numpy as jnp
 from abc import ABC, abstractmethod
 import time
 import pygame
+from pygame.locals import OPENGL, DOUBLEBUF, RESIZABLE
+import rtmidi
 import asyncio
 from src.github_save import save_and_push
-from pygame.locals import OPENGL, DOUBLEBUF, RESIZABLE
-import jax
+import os, sys
 
+
+repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
 class VisualizationBackend(ABC):
     @abstractmethod
@@ -29,6 +30,18 @@ class VisualizationBackend(ABC):
 class ModernGLBackend:
     def __init__(self):
         pygame.init()
+        self.midi_in = rtmidi.MidiIn()
+        self.setup_midi()
+
+    def setup_midi(self):
+        ports = self.midi_in.get_ports()
+        for i, name in enumerate(ports):
+            if 'nanoKONTROL' in name:
+                self.midi_in.open_port(i)
+                print('[MIDI] connected')
+                return
+        print("[MIDI] No MIDI device found")
+
 
     def initialize(self, cppn, width: int, height: int, window_scale: float):
         self.cppn = cppn
@@ -106,12 +119,19 @@ class ModernGLBackend:
             elif event.type == pygame.VIDEORESIZE:
                 pygame.display.set_mode(event.size, pygame.SCALED | pygame.RESIZABLE | pygame.DOUBLEBUF)
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_s and self.cppn:
-                import asyncio
-                from src.github_save import save_and_push
                 asyncio.create_task(save_and_push(self.cppn))
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_n and self.cppn:
                 self.cppn.print_connections()
 
+        if self.midi_in:
+            msg = self.midi_in.get_message()
+            if msg:
+                data, _ts = msg
+                status, control, value = data[0:3]
+                if control == 94 and value == 127:  # Play - restart the whole script
+                    os.execv(sys.executable, ['python'] + sys.argv)
+                elif control == 95 and value == 127:  # Record - save state
+                    asyncio.create_task(save_and_push(self.cppn))
 
     def cleanup(self):
         pygame.quit()
