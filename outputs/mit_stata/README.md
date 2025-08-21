@@ -1,4 +1,18 @@
-# Gallery
+# Tangible Dreams
+
+Here are the patterns shaped by visitors of the Tangible Dreams exhibition in MIT's Stata Center (Aug 25 - Sept 3, 2025).
+
+
+## August 21, 2025
+
+<p style='display:flex;flex-wrap:wrap;gap:8px'>
+<img src="./image_2025_08_21_192610.png" alt="image_2025_08_21_192610.png" width="300" loading="lazy" />
+<img src="./image_2025_08_21_192240.png" alt="image_2025_08_21_192240.png" width="300" loading="lazy" />
+<img src="./image_2025_08_21_191448.png" alt="image_2025_08_21_191448.png" width="300" loading="lazy" />
+<img src="./image_2025_08_21_191348.png" alt="image_2025_08_21_191348.png" width="300" loading="lazy" />
+<img src="./image_2025_08_21_191031.png" alt="image_2025_08_21_191031.png" width="300" loading="lazy" />
+<img src="./image_2025_08_21_173246.png" alt="image_2025_08_21_173246.png" width="300" loading="lazy" />
+</p>
 
 ## August 20, 2025
 
