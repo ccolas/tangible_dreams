@@ -26,7 +26,7 @@ def write_readme():
         day_obj = datetime(y, m, d).date()
         by_day.setdefault(day_obj, []).append(name)
 
-    lines = ["# Gallery\n"]
+    lines = ["# Tangible Dreams\n\nHere are the patterns shaped by visitors of the Tangible Dreams exhibition in MIT's Stata Center (Aug 25 - Sept 3, 2025).\n\n"]
     for day_obj in sorted(by_day.keys(), reverse=True):
         day_str = day_obj.strftime("%B %d, %Y")
         lines.append(f"## {day_str}\n")

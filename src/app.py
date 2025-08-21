@@ -26,6 +26,7 @@ DEBUG = True
 RES = 1024
 FACTOR = 16/9
 CONTROLLER = 'rs485'
+SCREEN = 'laptop'  # or 'external' or 'window'
 
 async def main():
     params = dict(debug=DEBUG, res=RES, factor=FACTOR)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
@@ -42,6 +43,7 @@ async def main():
     controller.viz = viz
     viz.initialize(
         cppn=controller.cppn,
+        screen_loc=SCREEN,
         width=int(RES * FACTOR),
         height=RES,
         window_scale=1  # Adjust this to make window bigger/smaller
