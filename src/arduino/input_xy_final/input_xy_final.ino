@@ -48,6 +48,7 @@ int idxForPin(uint8_t pinIndex) {
 
 void setup() {
   pinMode(RS485_DE, OUTPUT);
+  digitalWrite(RS485_DE, LOW);   // force driver off ASAP
   pinMode(ON_OFF_SWITCH, INPUT_PULLUP);  // active-low
   pinMode(AUX_SWITCH,    INPUT_PULLUP);  // NEW: active-low
   pinMode(ON_OFF_LED, OUTPUT);

@@ -23,8 +23,7 @@ class CPPN:
         self.output_path = output_path
         self.params = params
         self.t_start = time.time()
-        self.last_time = 0
-        self.update_period = 0.03
+        self.update_period = 0.01
         self.cam_input = False
 
         # General config
@@ -45,6 +44,8 @@ class CPPN:
         self.input_ids = list(range(0, self.n_inputs))
         self.middle_ids = list(range(self.n_inputs, self.n_inputs + self.n_hidden))
         self.output_ids = list(range(self.n_inputs + self.n_hidden, self.n_nodes))
+
+        self.last_times = [0 for _ in range(self.n_nodes)]
 
         # Parameters
         # self.adj_matrix = jnp.zeros((self.n_nodes, self.n_nodes))
@@ -117,7 +118,7 @@ class CPPN:
             'input_params1': jnp.full(self.n_inputs, 512, dtype=jnp.int32),
             'input_params2': jnp.full(self.n_inputs, 512, dtype=jnp.int32),
             'node_active': jnp.ones(self.n_nodes, dtype=jnp.bool_),
-            'biases': jnp.zeros(self.n_hidden, dtype=jnp.float32),
+            'biases': jnp.array([-1.  , -0.75, -0.5 , -0.25,  0.  ,  0.25,  0.5 ,  0.75,  1.  ], jnp.float32), #jnp.zeros(self.n_hidden, dtype=jnp.float32),
             'slopes': jnp.ones(self.n_hidden, dtype=jnp.float32),
             'slope_mods': jnp.zeros(self.n_hidden, dtype=jnp.float32),
             'activation_ids': jnp.zeros(self.n_hidden, dtype=jnp.int32),
@@ -138,13 +139,13 @@ class CPPN:
         """
         w /= 1023
         now = self.time
-        if now - self.last_time <= self.update_period:
+        if now - self.last_times[i] <= self.update_period:
             return None
-        self.last_time = now
+        self.last_times[int(i)] = now
 
         period = 4.0
         omega = 2 * np.pi / period
-        A = 1.0 * w
+        A = 3.0 * w
 
         # === Outputs: all same simple sine ===
         if i in self.output_ids:
@@ -453,6 +454,7 @@ class CPPN:
     @property
     def time(self):
         return time.time() - self.t_start
+
 
     def print_connections(self):
         """Print adjacency matrix as readable text"""

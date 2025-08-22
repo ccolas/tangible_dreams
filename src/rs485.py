@@ -5,8 +5,7 @@ from src.cppn import CPPN
 from src.cppn_utils import weight_mapping, slope_mapping, zoom_mapping, bias_mapping, mods_mapping, balance_mapping, contrast_mapping
 import asyncio
 import numpy as np
-
-
+from jax import numpy as jnp
 
 
 class RS485Controller:
@@ -107,7 +106,7 @@ class RS485Controller:
             if not self.parsed_once:
                 command = 0x01
                 timeout = self.total_timeout
-                max_retries = self.update_max_retries * 2
+                max_retries = 1e6
             elif (time.time() - self.last_change_time > 1 and self.command_sent_with_last_update[node_id-1] == 0x00 and (node_id - 1) >= self.cppn.n_inputs):
                 command = 0x02
                 timeout = self.total_timeout
@@ -121,14 +120,19 @@ class RS485Controller:
                 buffer = self.poll_single_node(ser, node_id, command, timeout)
                 if buffer:
                     _, parsed = self.parse_node_response(buffer, command)
-                    if parsed is not None:
+                    if parsed is not None and (command == 0x00 or len(parsed) > 0):
                         break
                 if command == 0x01:
                     timeout += 0.01
+                    if timeout > 0.5:
+                        time.sleep(0.5)
+                        print(f'[STRUGGLE] hard to read from Node {node_id}')
             if parsed is not None:
                 if len(parsed) > 0:
                     all_changes[node_id] = parsed
                     self.command_sent_with_last_update[node_id - 1] = command
+                    if command == 0x01:
+                        print(f"[FIRST READ] Node {node_id}")
             else:
                 print(f"[FAIL] Node {node_id} (after {max_retries} attempts)")
             i_attempts.append(i_attempt)
@@ -139,7 +143,10 @@ class RS485Controller:
 
         ser.reset_input_buffer()
         if command == 0x02: command = 0x01
+        time.sleep(0.00010)  # guard time before the next transmitter
         ser.write(bytes([self.sync_byte, node_id, command]))
+        ser.flush()  # ensure all bytes hit the wire
+        time.sleep(0.00020)  # ≈ 200 µs ~ 2 char times @115200 bps
 
         buffer = bytearray()
         reading = False
@@ -273,14 +280,14 @@ class RS485Controller:
 
                 # CV override first
                 cv_override_update = node_data.get(9, None)
-                if cv_override_update in [0, 1]:
-                    self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(bool(cv_override_update))
-                    if cv_override_update == 1:
-                        print(f'  switching cv override on')
-                    else:
-                        print(f'  switching cv override off')
-                        self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
-                        print(f'  resetting weight modulators')
+                if cv_override_update == 1 and not self.cppn.device_state['cv_override'][node_idx]:
+                    print(f'  switching cv override ON for node {node_id}')
+                    self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(True)
+
+                elif cv_override_update == 0 and self.cppn.device_state['cv_override'][node_idx]:
+                    print(f'  switching cv override OFF for node {node_id}')
+                    self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(False)
+                    self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
 
                 # # If CV override is on, adjust connection for input 2
                 # if self.cppn.device_state['cv_override'][node_idx]:
@@ -391,14 +398,14 @@ class RS485Controller:
 
                 # CV override first
                 cv_override_update = node_data.get(9, None)
-                if cv_override_update in [0, 1]:
-                    self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(bool(cv_override_update))
-                    if cv_override_update == 1:
-                        print(f'  switching cv override on')
-                    else:
-                        print(f'  switching cv override off')
-                        self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
-                        print(f'  resetting weight modulators')
+                if cv_override_update == 1 and not self.cppn.device_state['cv_override'][node_idx]:
+                    print(f'  switching cv override ON for node {node_id}')
+                    self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(True)
+
+                elif cv_override_update == 0 and self.cppn.device_state['cv_override'][node_idx]:
+                    print(f'  switching cv override OFF for node {node_id}')
+                    self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(False)
+                    self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
 
                 # if self.cppn.device_state['cv_override'][node_idx]:
                 #     sensor_id = 1
@@ -501,6 +508,7 @@ class RS485Controller:
                 # update weight of second input
                 weight2 = self.cppn.reactive_update(node_idx, weight1)
                 if weight2 is not None:
+                    weight2 = jnp.asarray(weight2, dtype=jnp.float16)
                     # find node connected in input 2
                     source2_idx = self.cppn.inputs_nodes_record[node_idx, 1]
                     if source2_idx >= 0:

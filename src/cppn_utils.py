@@ -9,13 +9,13 @@ from src.jax_vnoise import jax_vnoise
 noise = jax_vnoise.Noise()
 
 activation_fns = dict(
-    tanh=lambda x: jnp.tanh(x / 10),                                      # tanh
+    tanh=lambda x: jnp.tanh(x),                                      # tanh
     cos=lambda x: jnp.cos(x * 3),         # cos
-    leaky_relu=lambda x: jnp.where(x > 0, x, 0.1 * x),
-    gaussian=lambda x: jnp.exp(-(x/2) ** 2 / 1),  # gaussian
-    modulo=lambda x: ((x / 5) % 1.0) * 2 - 1,            # modulo
-    riemann=lambda x: sum([1 / i**2 * jnp.sin(i**2 * x ) for i in range(1, 4)]),  # riemann
-    perlin=lambda x: 2 * noise.noise1((1 * x).flatten(), octaves=3, persistence=0.1, lacunarity=5).reshape(x.shape), # perlin
+    leaky_relu=lambda x: jnp.clip(jnp.where(x > 0, 2 * x, 0.5 * x), -4, 4) / 3,
+    gaussian=lambda x: jnp.exp(-((x * 2) ** 2)),
+    modulo=lambda x: ((x) % 1.0) * 2 - 1,            # modulo
+    riemann=lambda x: sum([2 / (i*2)**2 * jnp.sin(i**2 * x * 5) for i in range(1, 7)]),  # riemann
+    perlin=lambda x: 2 * noise.noise1((2 * x).flatten(), octaves=5, persistence=0.1, lacunarity=10).reshape(x.shape), # perlin
     mysterious=lambda x: jax.lax.fori_loop(
         0, 5,
         lambda i, v: 4 * v * (1 - v),
@@ -33,8 +33,8 @@ activation_fns = dict(
 # =====================
 # Coordinate Transforms
 # =====================
-SCALE = 10
-def build_coordinate_grid(res, factor, scale=SCALE):
+# SCALE = 10
+def build_coordinate_grid(res, factor, scale=1):
     x = jnp.linspace(-scale*factor, scale*factor, int(res*factor))
     y = jnp.linspace(-scale, scale, res)
     return jnp.meshgrid(x, y)
@@ -45,40 +45,44 @@ def rotated_abs(x, y, rot_deg_raw, gain_raw):
     gain =  (gain_raw / 1023) * 10
     rot_rad = jnp.deg2rad(rot_deg)
     projection = x * jnp.cos(rot_rad) + y * jnp.sin(rot_rad)
-    return jnp.abs(projection * gain)
+    return jnp.abs(projection * gain) * 2 - 1
 
 # --- Radial Distance ---
 def generalized_radial(x, y, freq_raw, width_raw):
-    r = jnp.sqrt(x**2 + y**2) / SCALE
-    freq = 2 ** ((freq_raw / 1023) * 4)  # 1 to 8 oscillations
-    width = (width_raw / 1023) * 10 + 1
+    r = jnp.sqrt(x**2 + y**2)
+    freq = 2 ** ((freq_raw / 1023) * 4.5)  # 1 to 8 oscillations
+    width = (width_raw / 1023) * 3 + 0.5
     value = jnp.sin(r * freq) * jnp.exp(-r * width)
-    return value * SCALE
+    return value
 
 # --- Angular Sinusoid ---
 def angular_sinusoid(x, y, phase_raw, amplitude_raw):
     phase = (phase_raw / 1023) * 2 * jnp.pi
-    amplitude = (amplitude_raw / 1023) * 4 + 1  # 0 to 2
+    amplitude = (amplitude_raw / 1023) + 0.4  # 0 to 2
     theta = jnp.arctan2(y, x)
     return jnp.sin(theta + phase) * amplitude
 
 # --- Grid ---
 def grid(x, y, freq_raw, alpha_raw):
-    freq = 2 ** ((freq_raw / 1023) * 4 - 1)
+    # Map knob to a useful frequency range, e.g. 1–10
+    freq = 3 + (freq_raw / 1023) * 20
     alpha = alpha_raw / 1023
 
-    # Scale down coordinates to reduce grid density
-    scale = 0.2  # or 0.3, adjust to taste
+    # Scale coordinates so whole screen shows ~5 cells at freq=5
+    # If x,y range is [-10,10], then dividing by 2 gives ~5 cells
+    scale = 0.25
     x_scaled = x * scale
     y_scaled = y * scale
 
-    return jnp.sin(jnp.pi * x_scaled * freq + 0.3 * ((1 - alpha) + alpha * jnp.sin(9 * y_scaled))) * \
-        jnp.sin(jnp.pi * y_scaled * freq + 0.3 * ((1 - alpha) + alpha * jnp.sin(9 * x_scaled))) * 5
+    return (
+            jnp.sin(jnp.pi * x_scaled * freq + 1* ((1 - alpha) + alpha * jnp.sin(9 * y_scaled))) *
+            jnp.sin(jnp.pi * y_scaled * freq + 1 * ((1 - alpha) + alpha * jnp.sin(9 * x_scaled)))
+    )
 
 # --- Spiral Symmetry ---
 def spiral_symmetry(x, y, n_folds_raw, spiral_raw):
     n_folds = jnp.round((n_folds_raw / 1023) * 7 + 2)
-    spiral = jnp.tanh((spiral_raw / 1023) * 2) * 3
+    spiral = jnp.tanh((spiral_raw / 1023) * 5) * 3
     theta = jnp.arctan2(y, x)
     r = jnp.sqrt(x**2 + y**2) / jnp.sqrt(2)
     return jnp.sin(jnp.mod(theta, 2 * jnp.pi / n_folds) * n_folds + spiral * r)

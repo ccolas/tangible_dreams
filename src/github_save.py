@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import date
 from  datetime import datetime
 
-repo_path = Path(__file__).resolve().parents[1]
+repo_path = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/')
 imgs_path = repo_path / "outputs" / "mit_stata"
 
 def write_readme():
@@ -41,6 +41,7 @@ def write_readme():
     return readme_path
 
 async def save_and_push(cppn):
+    print('[SAVE] saving current network')
     ts = cppn.timestamp
     cppn.save_state()  # saves .pkl and .png into output_path
     readme_path = write_readme()

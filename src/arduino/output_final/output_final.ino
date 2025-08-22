@@ -64,6 +64,7 @@ static uint32_t lastSample = 0; // for on/off led update
 
 void setup(){
   pinMode(RS485_DE, OUTPUT);
+  digitalWrite(RS485_DE, LOW);   // force driver off ASAP
   pinMode(ON_OFF_SWITCH, INPUT_PULLUP);
   pinMode(CV_SWITCH, INPUT_PULLUP);
   pinMode(ON_OFF_LED, OUTPUT);
