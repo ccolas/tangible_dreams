@@ -1,20 +1,14 @@
 import time
-
-import PIL.Image
 import numpy as np
 import jax.numpy as jnp
-from jax import random, jit, lax
-from collections import deque
-import networkx as nx
+from jax import random
 from PIL import Image
 import pickle
 import jax
-import cv2
-import matplotlib.pyplot as plt
 
 
 from viz import create_backend
-from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping
+from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping, noise
 from src.misc.error_screen import generate_error_screen
 from src.misc.compute_n_cycles import compute_rounds
 
@@ -144,43 +138,47 @@ class CPPN:
         self.last_times[int(i)] = now
 
         period = 4.0
-        omega = 2 * np.pi / period
-        A = 3.0 * w
+        omega = 2 * np.pi / period / 2
+        A = 2.0 * w
 
         # === Outputs: all same simple sine ===
         if i in self.output_ids:
-            return A * np.sin(omega * now)
+            return A * np.sin(omega * now + i)
 
         # === Middles: 9 different dynamics ===
         idx = i - self.n_inputs  # 0..8
         state = self.reactive_states[i]
 
         if idx == 0:  # sine
-            return A * np.sin(omega * now + idx)
-        elif idx == 1:  # cosine
-            return A * np.cos(omega * now + idx)
-        elif idx == 2:  # sawtooth
+            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
+        elif idx == 1:  # smooth triangle
             phase = (now / period) % 1.0
-            return A * (2 * phase - 1)
-        elif idx == 3:  # square
-            return A * np.sign(np.sin(omega * now))
-        elif idx == 4:  # triangle
-            phase = (now / period) % 1.0
-            tri = 2 * abs(2 * phase - 1) - 1
+            tri = np.arcsin(np.sin(2 * np.pi * phase)) * (2 / np.pi)
             return A * tri
-        elif idx == 5:  # logistic map (chaotic)
-            phase = 2 * np.pi * w * now / 20.0  # 20s drift cycle
-            val = np.sin(omega * now + phase)
-            return A * val
-        elif idx == 6:  # noisy drift
-            val = state.get('val', 0.0)
-            val = 0.95 * val + 0.05 * np.random.uniform(-1, 1)
-            state['val'] = val
-            return A * val
-        elif idx == 7:  # lissajous style
-            return A * (np.sin(omega * now) * np.cos(omega * now + idx))
-        elif idx == 8:  # pulse train
-            return A if (int(now / period) % 2 == 0) else 0.0
+        elif idx == 2:  # sin on sine
+            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
+        elif idx == 3:  # lissajous-style beating (slightly off frequencies)
+            return A * (np.sin(omega * now) * np.cos(0.97 * omega * now))
+        elif idx == 4:  # bounded chirped sine (frequency sweeps up/down slowly)
+            base = omega
+            sweep = 0.5 * omega
+            mod_period = 12.0
+            mod_phase = (now / mod_period) % 1.0
+            tri = 2 * abs(2 * mod_phase - 1) - 1  # triangle in [-1,1]
+            inst_freq = base + sweep * tri
+            state['phase'] = state.get('phase', 0.0) + inst_freq * (now - state.get('last_t', now))
+            state['last_t'] = now
+            return A * np.sin(state['phase'])
+        elif idx == 5:  # perlin-modulated sine (alive, organic wobble)
+            drift = 0.3 * noise.noise1(now * 0.05, octaves=2)  # slow wander
+            return A * np.sin((omega * (1 + drift)) * now)
+        elif idx == 6:  # perlin drift only (aperiodic but smooth)
+            t = now * 0.2 + idx * 10.0
+            return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
+        elif idx == 7:  # smooth stepped pattern (periodic but not sinusoidal)
+            t = now * 0.2 + idx * 10.0
+            perlin = (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
+            return A * (0.5 * np.sin(omega * now) + perlin)
 
         return 0.0
 

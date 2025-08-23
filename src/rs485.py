@@ -1,11 +1,14 @@
 import serial
 import time
 import os
-from src.cppn import CPPN
-from src.cppn_utils import weight_mapping, slope_mapping, zoom_mapping, bias_mapping, mods_mapping, balance_mapping, contrast_mapping
 import asyncio
+import signal
+import atexit
 import numpy as np
 from jax import numpy as jnp
+
+from src.cppn import CPPN
+from src.cppn_utils import weight_mapping, slope_mapping, zoom_mapping, bias_mapping, mods_mapping, balance_mapping, contrast_mapping
 
 
 class RS485Controller:
@@ -22,9 +25,9 @@ class RS485Controller:
         self.update_timeout = 0.004
         self.total_timeout = 0.15
         self.update_max_retries = 5
-        # self.full_refresh_rate = 5
+
+        broken_nodes = [14]
         self.node_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
-        # self.command = 0x01  # ask for full data
         self.command_sent_with_last_update = [None for _ in range(len(self.node_ids))]
         self.last_change_time = time.time()
         self.start_byte = 0xAA
@@ -32,15 +35,19 @@ class RS485Controller:
         self.sync_byte = 0xCC
 
         # identify node ids
-        self.input_ids = [1, 2, 3, 4, 5]
-        self.middle_ids = [6, 7, 8, 9, 10, 11, 12, 13, 14]
-        self.output_ids = [15, 16, 17]
-        # self.real_nodes = [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 ,17]
+        self.input_ids = sorted(set([1, 2, 3, 4, 5]) - set(broken_nodes))
+        self.middle_ids = sorted(set([6, 7, 8, 9, 10, 11, 12, 13]) - set(broken_nodes))
+        self.output_ids = sorted(set([15, 16, 17]) - set(broken_nodes))
+        self.node_ids = sorted(set(self.node_ids) - set(broken_nodes))
 
-        # param ranges
         self.weight_range = [-3, 3]
         self.ensure_low_latency()
         self.viz = None
+        self.parsed_once = False
+
+        # Serial handle (lazy open)
+        self.ser = None
+        self._install_clean_exit()
 
     def ensure_low_latency(self):
         device = os.path.basename(self.port)
@@ -58,44 +65,88 @@ class RS485Controller:
             print(f"[WARN] latency_timer path not found for {device}")
             assert False
 
+    # --- Safe open/close ---
+    def _open_serial(self):
+        ser = serial.Serial(
+            self.port, self.baud,
+            timeout=0, write_timeout=0,
+            rtscts=False, dsrdtr=False, xonxoff=False
+        )
+        ser.reset_input_buffer();
+        ser.reset_output_buffer()
+        t0 = time.time()
+        while time.time() - t0 < 0.05:
+            ser.read(4096)
+        ser.write(b'\xFF' * 64)  # idle preamble
+        ser.flush()
+        time.sleep(0.003)
+        try:
+            ser.setDTR(False);
+            ser.setRTS(False)
+        except Exception:
+            pass
+        return ser
 
+    def _close_serial(self):
+        if self.ser is None:
+            return
+        try:
+            self.ser.write(b'\xFF' * 64)
+            self.ser.flush()
+            time.sleep(0.003)
+            self.ser.reset_input_buffer();
+            self.ser.reset_output_buffer()
+            try:
+                self.ser.setDTR(False);
+                self.ser.setRTS(False)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            self.ser.close()
+        except Exception:
+            pass
+        self.ser = None
+
+    def _install_clean_exit(self):
+        atexit.register(self._close_serial)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: (_ for _ in ()).throw(SystemExit))
+
+    # --- Polling ---
     async def start_polling_loop(self):
-        print('Starting RS845', flush=True)
-        self.parsed_once = False
-        with serial.Serial(self.port, self.baud, timeout=0, write_timeout=0) as ser:
-            ser.inter_byte_timeout = 0
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-            await asyncio.sleep(0.1)
-            while True:
-                t_init = time.time()
+        print('Starting RS485', flush=True)
+        self.ser = self._open_serial()
+        self.ser.inter_byte_timeout = 0
+        await asyncio.sleep(0.1)
+        while True:
+            t_init = time.time()
+            if self.viz:
                 self.viz.poll_events()
-                changes, i_attempts = self.poll_nodes(ser)
-                t_poll = time.time()
-                self.handle_update(changes)
-                t_update = time.time()
-                if len(changes) > 0:
-                    self.last_change_time = time.time()
-                    if not self.parsed_once: self.parsed_once = True
-                    time_poll = (t_poll - t_init) * 1000
-                    time_update = (t_update - t_poll) * 1000
-                    # print(f'control time: poll={time_poll:.2f}ms, update={time_update:.2f}, attempts={i_attempts}')
-                # if self.command == 0x01 and parsed_once: self.command = 0x00  # ask for updates only
-                await asyncio.sleep(0.00016)  # match main loop timing
+            changes, i_attempts = self.poll_nodes(self.ser)
+            t_poll = time.time()
+            self.handle_update(changes)
+            t_update = time.time()
+            if len(changes) > 0:
+                self.last_change_time = time.time()
+                if not self.parsed_once: self.parsed_once = True
+                time_poll = (t_poll - t_init) * 1000
+                time_update = (t_update - t_poll) * 1000
+                # print(f'control time: poll={time_poll:.2f}ms, update={time_update:.2f}')
+            await asyncio.sleep(0.00016)
 
     def start(self):
-        self.parsed_once = False
-        with serial.Serial(self.port, self.baud, timeout=self.total_timeout) as ser:
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-            time.sleep(0.1)
-            while True:
-                t_init = time.time()
-                changes, i_attempts = self.poll_nodes(ser)
-                self.handle_update(changes)
-                print(f"  took: {(time.time() - t_init)/1e3:.2f}ms, attempts:{i_attempts}", flush=True)
-                if len(changes) > 0 and not self.parsed_once:
-                    self.parsed_once = True
+        self.ser = self._open_serial()
+        self.ser.inter_byte_timeout = 0
+        time.sleep(0.1)
+        while True:
+            t_init = time.time()
+            changes, i_attempts = self.poll_nodes(self.ser)
+            self.handle_update(changes)
+            print(f"  took: {(time.time() - t_init)*1000:.2f}ms, attempts:{i_attempts}", flush=True)
+            if len(changes) > 0 and not self.parsed_once:
+                self.parsed_once = True
 
     def poll_nodes(self, ser):
         all_changes = {}
@@ -106,8 +157,10 @@ class RS485Controller:
             if not self.parsed_once:
                 command = 0x01
                 timeout = self.total_timeout
-                max_retries = 1e6
-            elif (time.time() - self.last_change_time > 1 and self.command_sent_with_last_update[node_id-1] == 0x00 and (node_id - 1) >= self.cppn.n_inputs):
+                max_retries = 10
+            elif (time.time() - self.last_change_time > 1 and
+                  self.command_sent_with_last_update[node_id - 1] == 0x00 and
+                  (node_id - 1) >= self.cppn.n_inputs):
                 command = 0x02
                 timeout = self.total_timeout
                 max_retries = self.update_max_retries
@@ -122,11 +175,8 @@ class RS485Controller:
                     _, parsed = self.parse_node_response(buffer, command)
                     if parsed is not None and (command == 0x00 or len(parsed) > 0):
                         break
-                if command == 0x01:
-                    timeout += 0.01
-                    if timeout > 0.5:
-                        time.sleep(0.5)
-                        print(f'[STRUGGLE] hard to read from Node {node_id}')
+                if command == 0x01 and timeout < 1.0:
+                    timeout += 0.05
             if parsed is not None:
                 if len(parsed) > 0:
                     all_changes[node_id] = parsed
@@ -136,62 +186,52 @@ class RS485Controller:
             else:
                 print(f"[FAIL] Node {node_id} (after {max_retries} attempts)")
             i_attempts.append(i_attempt)
-
         return all_changes, i_attempts
 
     def poll_single_node(self, ser, node_id, command, timeout):
-
         ser.reset_input_buffer()
-        if command == 0x02: command = 0x01
-        time.sleep(0.00010)  # guard time before the next transmitter
+        if command == 0x02:
+            command = 0x01
+        time.sleep(0.0001)
         ser.write(bytes([self.sync_byte, node_id, command]))
-        ser.flush()  # ensure all bytes hit the wire
-        time.sleep(0.00020)  # ≈ 200 µs ~ 2 char times @115200 bps
+        ser.flush()
+        time.sleep(0.0002)
 
         buffer = bytearray()
         reading = False
         start_time = time.time()
-
         while time.time() - start_time < timeout:
             byte = ser.read()
             if not byte:
                 continue
             byte = byte[0]
-
             if byte == self.start_byte:
-                buffer = bytearray()
-                reading = True
+                buffer = bytearray(); reading = True
             elif byte == self.end_byte and reading:
                 break
             elif reading:
                 buffer.append(byte)
-
         if len(buffer) >= 2:
             return buffer
-
         return None
 
     def parse_node_response(self, data, command):
         if len(data) < 2:
             return None, None
-
         node_id = data[0]
         flag = data[1]
-
-        if flag == 0x01:  # no data for this node
+        if flag == 0x01:
             return node_id, {}
-
-        if flag == 0xFF:  # some data for this node
+        if flag == 0xFF:
             if len(data) < 3:
                 return None, None
-            change_count = data[2]  # number of values that changed
+            change_count = data[2]
             parsed = {}
             index = 3
             for _ in range(change_count):
                 if index >= len(data):
                     return None, None
-                pin = data[index]
-                index += 1
+                pin = data[index]; index += 1
                 if pin < 8:
                     if index + 1 >= len(data):
                         return None, None
@@ -200,14 +240,12 @@ class RS485Controller:
                 elif pin < 10:
                     if index >= len(data):
                         return None, None
-                    value = data[index]
-                    index += 1
+                    value = data[index]; index += 1
                 else:
                     return None, None
-                if command != 0x02 or pin < 3:  # with command 0x02 (update), only update input jacks
+                if command != 0x02 or pin < 3:
                     parsed[pin] = value
             return node_id, parsed
-
         return None, None
 
 
