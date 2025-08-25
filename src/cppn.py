@@ -5,12 +5,24 @@ from jax import random
 from PIL import Image
 import pickle
 import jax
-
+import sounddevice as sd
 
 from viz import create_backend
 from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping, noise
 from src.misc.error_screen import generate_error_screen
 from src.misc.compute_n_cycles import compute_rounds
+from src.sound_input import AudioReactive
+
+
+SAMPLE_RATE = 44100
+BLOCK_SIZE = 1024
+BANDS = [(20,200), (200,2000), (2000,8000)]  # bass, mid, high
+
+def _band_energy(mag, freqs, band):
+    lo, hi = band
+    idx = np.where((freqs >= lo) & (freqs < hi))[0]
+    return np.mean(mag[idx]) if len(idx) else 0.0
+
 
 class CPPN:
     def __init__(self, output_path, params):
@@ -40,31 +52,7 @@ class CPPN:
         self.output_ids = list(range(self.n_inputs + self.n_hidden, self.n_nodes))
 
         self.last_times = [0 for _ in range(self.n_nodes)]
-
-        # Parameters
-        # self.adj_matrix = jnp.zeros((self.n_nodes, self.n_nodes))
-        # self.biases = jnp.zeros(self.n_hidden)
-        # self.slopes = jnp.ones(self.n_hidden)
-        # self.slope_mods = jnp.zeros(self.n_hidden)
-        # self.weights = jnp.zeros((self.n_nodes, self.n_nodes))
-        # self.weight_mods = jnp.zeros((self.n_nodes, self.n_nodes))
-        # self.activation_ids = jnp.zeros(self.n_hidden, dtype=int)
-
-        # Output transformation (RGB or HSL mode)
-        # self.output_slopes = jnp.ones(3)   # scaling for output channels
-        # self.output_slope_mods = jnp.zeros(3)   # scaling for output channels
-        # self.output_biases = jnp.zeros(3)  # sigmoid or linear bias
-        # self.output_modes = jnp.zeros(3, dtype=int)  # 0=sigmoid RGB, 1=clipped HSL
-
-        # Input configuration (for inputs 1–6)
-        # self.input_function_ids = jnp.array([0, 1, 2, 3, 4, 5])  # Index into input basis functions
-        # self.input_params1 = jnp.full(self.n_inputs, 512)  # zoom → default 1
-        # self.input_params2 = jnp.full(self.n_inputs, 512)  # bias → default 0
-        # self.inverted_inputs = jnp.zeros(self.n_inputs)
-
-        # Node masking
-        # self.node_active = jnp.ones(self.n_inputs + self.n_hidden + self.n_outputs)
-        # self.cv_override = jnp.zeros(self.n_nodes)
+        self.audio_values = np.zeros(len(BANDS))  # [bass, mid, high]
         self.inputs_nodes_record = np.full((self.n_nodes, 3), -1, dtype=int)  # track what gets connected on inputs
 
         # Activations
@@ -101,6 +89,10 @@ class CPPN:
 
         if params.get('load_from'):
             self.set_state(state_path=params['load_from'])
+
+        if params['with_sound']:
+            self.audio = AudioReactive()
+            self.audio.start()
 
     def make_initial_state(self):
         state = {
@@ -149,16 +141,30 @@ class CPPN:
         idx = i - self.n_inputs  # 0..8
         state = self.reactive_states[i]
 
+
         if idx == 0:  # sine
-            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
+            if self.params['with_sound']:
+                audio_val = float(self.audio.audio_array[idx])
+                print(A * (audio_val * 2 - 1))
+                return A * (audio_val * 2 - 1)
+            else:
+                return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
         elif idx == 1:  # smooth triangle
-            phase = (now / period) % 1.0
-            tri = np.arcsin(np.sin(2 * np.pi * phase)) * (2 / np.pi)
-            return A * tri
-        elif idx == 2:  # sin on sine
+            if self.params['with_sound']:
+                audio_val = float(self.audio.audio_array[idx])
+                return A * (audio_val * 2 - 1)
+            else:
+                phase = (now / period) % 1.0
+                tri = np.arcsin(np.sin(2 * np.pi * phase)) * (2 / np.pi)
+                return A * tri
+        elif idx == 2:
+            if self.params['with_sound']:
+                audio_val = float(self.audio.audio_array[idx])
+                return A * (audio_val * 2 - 1)
+            else:  # lissajous-style beating (slightly off frequencies)
+                return A * (np.sin(omega * now) * np.cos(0.97 * omega * now))
+        elif idx == 3:   # sin on sine
             return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
-        elif idx == 3:  # lissajous-style beating (slightly off frequencies)
-            return A * (np.sin(omega * now) * np.cos(0.97 * omega * now))
         elif idx == 4:  # bounded chirped sine (frequency sweeps up/down slowly)
             base = omega
             sweep = 0.5 * omega

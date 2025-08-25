@@ -23,10 +23,10 @@ class RS485Controller:
         self.port = params.get('port', '/dev/ttyUSB0')
         self.baud = 115200
         self.update_timeout = 0.004
-        self.total_timeout = 0.15
+        self.total_timeout = 0.3
         self.update_max_retries = 5
 
-        broken_nodes = [14]
+        broken_nodes = []
         self.node_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         self.command_sent_with_last_update = [None for _ in range(len(self.node_ids))]
         self.last_change_time = time.time()
@@ -36,7 +36,7 @@ class RS485Controller:
 
         # identify node ids
         self.input_ids = sorted(set([1, 2, 3, 4, 5]) - set(broken_nodes))
-        self.middle_ids = sorted(set([6, 7, 8, 9, 10, 11, 12, 13]) - set(broken_nodes))
+        self.middle_ids = sorted(set([6, 7, 8, 9, 10, 11, 12, 13, 14]) - set(broken_nodes))
         self.output_ids = sorted(set([15, 16, 17]) - set(broken_nodes))
         self.node_ids = sorted(set(self.node_ids) - set(broken_nodes))
 
@@ -157,7 +157,7 @@ class RS485Controller:
             if not self.parsed_once:
                 command = 0x01
                 timeout = self.total_timeout
-                max_retries = 10
+                max_retries = 20
             elif (time.time() - self.last_change_time > 1 and
                   self.command_sent_with_last_update[node_id - 1] == 0x00 and
                   (node_id - 1) >= self.cppn.n_inputs):
@@ -182,7 +182,7 @@ class RS485Controller:
                     all_changes[node_id] = parsed
                     self.command_sent_with_last_update[node_id - 1] = command
                     if command == 0x01:
-                        print(f"[FIRST READ] Node {node_id}")
+                        print(f"[FIRST READ] Node {node_id}, {parsed}")
             else:
                 print(f"[FAIL] Node {node_id} (after {max_retries} attempts)")
             i_attempts.append(i_attempt)
@@ -296,8 +296,8 @@ class RS485Controller:
                         print(f'  active: {sensor_value}')
                         self.cppn.device_state['node_active'] = self.cppn.device_state['node_active'].at[node_idx].set(bool(sensor_value))
                         graph_changed = True
-                    else:
-                        raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
+                    # else:
+                    #     raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
 
 
             # # # # # # # # # # # # # # #
@@ -413,8 +413,8 @@ class RS485Controller:
                             print('  deactivating node')
                     elif sensor_id == 9:
                         pass
-                    else:
-                        raise ValueError(f'Unexpected sensor {sensor_id} on node {node_id}')
+                    # else:
+                    #     raise ValueError(f'Unexpected sensor {sensor_id} on node {node_id}')
 
 
             # # # # # # # # # # # # # # #
@@ -528,8 +528,8 @@ class RS485Controller:
                             print('  deactivating node')
                     elif sensor_id == 9:
                         pass
-                    else:
-                        raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
+                    # else:
+                    #     raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
 
         if graph_changed:
             self.cppn.update_cycles_if_needed()

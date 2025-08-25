@@ -13,7 +13,7 @@ from screeninfo import get_monitors
 
 monitors = get_monitors()
 laptop = next(m for m in monitors if "eDP" in m.name)
-external = next(m for m in monitors if "HDMI" in m.name)
+# external = next(m for m in monitors if "HDMI" in m.name)
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 

@@ -72,7 +72,7 @@ int idxForPin(uint8_t p){
 static uint32_t lastSample = 0; // for on/off led update
 
 void setup(){
-  Serial.begin(115200);  // ADD THIS LINE
+  // Serial.begin(115200);  // ADD THIS LINE
   pinMode(RS485_DE, OUTPUT);
   digitalWrite(RS485_DE, LOW);   // force driver off ASAP
   pinMode(ON_OFF_SWITCH, INPUT_PULLUP);
