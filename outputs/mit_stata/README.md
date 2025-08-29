@@ -6,6 +6,7 @@ Here are the patterns shaped by visitors of the Tangible Dreams exhibition in MI
 ## August 29, 2025
 
 <p style='display:flex;flex-wrap:wrap;gap:8px'>
+<img src="./image_2025_08_29_162912.png" alt="image_2025_08_29_162912.png" width="300" loading="lazy" />
 <img src="./image_2025_08_29_161253.png" alt="image_2025_08_29_161253.png" width="300" loading="lazy" />
 <img src="./image_2025_08_29_161221.png" alt="image_2025_08_29_161221.png" width="300" loading="lazy" />
 <img src="./image_2025_08_29_160752.png" alt="image_2025_08_29_160752.png" width="300" loading="lazy" />
