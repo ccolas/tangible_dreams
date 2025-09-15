@@ -2,6 +2,9 @@ import asyncio
 import os
 import time
 
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.midi import MIDIController
 from src.rs485 import RS485Controller
 from src.viz import create_backend
@@ -22,11 +25,13 @@ os.makedirs(output_path, exist_ok=True)
 #  optimize for speed with claude
 #  add button to save as elites, then mutate these when sampling new network!
 
+
+
 DEBUG = True
 RES = 1024
 FACTOR = 16/9
 CONTROLLER = 'rs485'
-SCREEN = 'laptop'  # or 'external' or 'window'
+SCREEN = 'external'  # or 'external' or 'window'
 WITH_SOUND = False
 
 async def main():

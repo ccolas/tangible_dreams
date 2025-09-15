@@ -11,7 +11,7 @@ BAUD = 115200
 START_BYTE = 0xAA
 END_BYTE = 0xBB
 TIMEOUT = 0.004  # 4ms for update
-TIMEOUT_TOTAL = 0.5  # generous first/full read
+TIMEOUT_TOTAL = 1  # generous first/full read
 MAX_RETRIES = 3
 NODES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 NODES_TO_PLOT = NODES
@@ -122,7 +122,7 @@ def poll_single_node(ser, node_id, command, timeout):
     ser.reset_input_buffer()
     ser.write(bytes([0xCC, node_id, command]))
     ser.flush()
-    time.sleep(0.0002)  # guard ~200µs
+    time.sleep(0.0004)  # guard ~200µs
 
     buffer = bytearray()
     reading = False

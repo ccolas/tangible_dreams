@@ -8,12 +8,31 @@ import rtmidi
 import asyncio
 from src.github_save import save_and_push
 import os, sys
-from screeninfo import get_monitors
+
+try:
+    from screeninfo import get_monitors
+
+    monitors = get_monitors()
+    laptop = next(m for m in monitors if "eDP" in m.name)
+    external = next(m for m in monitors if "HDMI" in m.name)
+except Exception as e:
+    print(f"Could not detect monitors automatically: {e}")
 
 
-monitors = get_monitors()
-laptop = next(m for m in monitors if "eDP" in m.name)
-# external = next(m for m in monitors if "HDMI" in m.name)
+    # Fallback - define monitor info manually
+    class Monitor:
+        def __init__(self, x, y, width, height, width_mm, height_mm, name, is_primary):
+            self.x = x
+            self.y = y
+            self.width = width
+            self.height = height
+            self.name = name
+            self.is_primary = is_primary
+            self.width_mm = width_mm
+            self.height_mm = height_mm
+
+    laptop = Monitor(x=0, y=0, width=1920, height=1080, width_mm=344, height_mm=194, name='eDP-1', is_primary=True)
+    external = Monitor(x=1920, y=0, width=1920, height=1200, width_mm=1600, height_mm=900, name='HDMI-1-0', is_primary=False)
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 

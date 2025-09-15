@@ -180,7 +180,8 @@ class CPPN:
             return A * np.sin((omega * (1 + drift)) * now)
         elif idx == 6:  # perlin drift only (aperiodic but smooth)
             t = now * 0.2 + idx * 10.0
-            return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
+            out = A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
+            return out
         elif idx == 7:  # smooth stepped pattern (periodic but not sinusoidal)
             t = now * 0.2 + idx * 10.0
             perlin = (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
@@ -289,8 +290,9 @@ class CPPN:
 
             out = net[n_in + n_h:n_in + n_h + n_out]
             out = (out + state['output_biases'][:, None]) * (state['output_slopes'][:, None] + state['output_slope_mods'][:, None])
+            # out = jax.nn.sigmoid(5 * out)
             out = out * active[n_in + n_h:n_in + n_h + n_out]
-            out = jnp.clip(out, 0.0, 1.0)  # (n_out, N)
+            out = jnp.clip(out, 0.0, 2.0)  # (n_out, N)
             img = (out.T * 255.0).astype(jnp.uint8).reshape(H, W, n_out)
             return img
 

@@ -2,7 +2,7 @@ import serial, time
 
 PORT = '/dev/ttyUSB0'
 BAUD = 115200          # try 57600 if needed
-STUCK = [14]     # nodes to revive
+STUCK = [17]     # nodes to revive
 
 def open_and_wake():
     ser = serial.Serial(PORT, BAUD, timeout=0, write_timeout=0)

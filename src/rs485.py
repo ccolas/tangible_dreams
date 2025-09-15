@@ -22,8 +22,8 @@ class RS485Controller:
         # RS485 config
         self.port = params.get('port', '/dev/ttyUSB0')
         self.baud = 115200
-        self.update_timeout = 0.004
-        self.total_timeout = 0.3
+        self.update_timeout = 0.0045
+        self.total_timeout = 0.8
         self.update_max_retries = 5
 
         broken_nodes = []
