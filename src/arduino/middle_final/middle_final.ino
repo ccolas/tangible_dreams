@@ -8,7 +8,7 @@
 SoftwareSerial bus(RS485_RX, RS485_TX);
 
 // --- Node id
-#define NODE_ID 14
+#define NODE_ID 9
 
 // --- Pin mapping (hardware)
 #define AIN0          A0   // -> proto 0 (binned)
@@ -117,7 +117,17 @@ void readInputs(){
 
   analogRead(AIN0);
   delayMicroseconds(10);            // try 10 µs; raise if needed
-  newValues[idxForPin(0)] = mapToCustomBins(readStable(AIN0), thresholdNodeIds, NUM_THRESHOLDS);
+
+  // --- A0 dynamic depending on CV state ---
+  // If cvState = 0 → send binned node ID
+  // If cvState = 1 → send continuous value
+  if (cvState == 0) {
+      newValues[idxForPin(0)] = mapToCustomBins(readStable(AIN0), thresholdNodeIds, NUM_THRESHOLDS);
+  } else {
+      int rawA0 = readStable(AIN0);
+      if (rawA0 < 1) rawA0 = 1;      // avoid sending 0x00 if needed
+      newValues[idxForPin(0)] = rawA0;
+  }
   newValues[idxForPin(1)] = mapToCustomBins(readStable(AIN1), thresholdNodeIds, NUM_THRESHOLDS);
   newValues[idxForPin(2)] = mapToCustomBins(readStable(AIN2), thresholdNodeIds, NUM_THRESHOLDS);
 
@@ -155,8 +165,8 @@ void loop(){
     uint8_t pinIndex = ACTIVE_PINS[i];
     bool diff;
 
-    // Thresholded analogs: A3–A6 (proto 3..6)
-    if(pinIndex==3 || pinIndex==4 || pinIndex==5 || pinIndex==6){
+    // Thresholded analogs: A3–A6 (proto 3..6) and A0 when CV is on
+    if(pinIndex==3 || pinIndex==4 || pinIndex==5 || pinIndex==6 || (pinIndex==0 && cvState==1)) {
       diff = (lastValues[i]==0xFFFF) ||
              (abs((int)newValues[i] - (int)lastValues[i]) > ANALOG_THRESHOLD);
     } else {
@@ -172,13 +182,13 @@ void loop(){
   }
 
   // propagate changes
-  if (changed[idxForPin(0)] && !changed[idxForPin(3)]) { changed[idxForPin(3)] = true; changeCount++; }
+  if (changed[idxForPin(0)] && !changed[idxForPin(3)] && cvState==0) { changed[idxForPin(3)] = true; changeCount++; }
   if (changed[idxForPin(1)] && !changed[idxForPin(4)]) { changed[idxForPin(4)] = true; changeCount++; }
   if (changed[idxForPin(2)] && !changed[idxForPin(5)]) { changed[idxForPin(5)] = true; changeCount++; }
 
-   // these may be needed when CV becomes actual reading from A0 to control A4
-   //   if (changed[idxForPin(9)] && !changed[idxForPin(0)]) { changed[idxForPin(0)] = true; changeCount++; }
-   //   if (changed[idxForPin(9)] && !changed[idxForPin(3)]) { changed[idxForPin(3)] = true; changeCount++; }
+  // these may be needed when CV becomes actual reading from A0 to control A4
+  if (changed[idxForPin(9)] && !changed[idxForPin(0)]) { changed[idxForPin(0)] = true; changeCount++; }
+  if (changed[idxForPin(9)] && !changed[idxForPin(3)]) { changed[idxForPin(3)] = true; changeCount++; }
   // t_format = micros();  // AFTER CHANGE DETECTION
   txBegin();
   bus.write(0xAA);
