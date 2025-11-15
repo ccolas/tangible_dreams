@@ -4,12 +4,13 @@ import os
 import asyncio
 import signal
 import atexit
-import numpy as np
 from jax import numpy as jnp
+import numpy as np
 
 from src.cppn import CPPN
-from src.cppn_utils import weight_mapping, slope_mapping, zoom_mapping, bias_mapping, mods_mapping, balance_mapping, contrast_mapping
+from src.cppn_utils import weight_mapping, slope_mapping, mods_mapping, balance_mapping, contrast_mapping
 
+BINS = np.array([34, 57, 99, 139, 179, 248, 333, 377, 445, 518, 618, 723, 800, 891])
 
 class RS485Controller:
     def __init__(self, output_path, params):
@@ -327,7 +328,7 @@ class RS485Controller:
                     self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(False)
                     self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
 
-                # # If CV override is on, adjust connection for input 2
+                # If CV override is on, update reading of input 2
                 # if self.cppn.device_state['cv_override'][node_idx]:
                 #     sensor_id = 1
                 #     input2_update = node_data.get(sensor_id, None)
@@ -338,63 +339,72 @@ class RS485Controller:
                 #         if source_idx != old_source_idx:
                 #             if source_idx < len(self.node_ids):
                 #                 if old_source_idx >= 0:
-                #                     self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
+                #                     unique_connection = len(np.argwhere(self.cppn.inputs_nodes_record[node_idx] == old_source_idx)) == 1
+                #                     if unique_connection:
+                #                         self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
+                #                         graph_changed = True
+                #                         print(f'  disconnecting {old_source_idx + 1} from {node_id}')
                 #                     self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
-                #                     print(f'  disconnecting {old_source_idx + 1} from {node_id}')
                 #                 if source_idx >= 0:
                 #                     self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
                 #                     self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
+                #                     graph_changed = True
                 #                     print(f'  connecting {source_id} to {node_id}')
-                #             else:
-                #                 print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
+                #                 else:
+                #                     print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
 
                 for sensor_id, sensor_value in node_data.items():
                     if sensor_id in [0, 1, 2]:  # Input node ids
-                        # if self.cppn.cv_override[node_idx] and sensor_id == 0:
-                        #     print(f'  reading cv signal change: {sensor_value}')
-                        #     # this value becomes the weight of the connection from input 2
-                        #     weight2 = weight_mapping(sensor_value)
-                        #     controlled_input_id = 1
-                        #     source2_idx = self.cppn.inputs_nodes_record[node_idx, controlled_input_id]
-                        #     if source2_idx >= 0:
-                        #         self.cppn.weight_mods = self.cppn.weight_mods.at[source2_idx, node_idx].set(weight2)
-                        #         print(f'  cv controls weight 2: {weight2}')
-                        # else:
-                        source_id = sensor_value
-                        source_idx = source_id - 1
-                        old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
-                        if source_idx != old_source_idx:
-                            if source_idx < len(self.node_ids):
-                                if old_source_idx >= 0:
-                                    unique_connection = len(np.argwhere(self.cppn.inputs_nodes_record[node_idx] == old_source_idx)) == 1
-                                    if unique_connection:
-                                        self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
+                        if self.cppn.device_state['cv_override'][node_idx] and sensor_id == 0 and "cv" not in self.cppn.reactivity:
+                            # if not using cv control, then remap A0 to its node id
+                            sensor_value = np.searchsorted(BINS, sensor_value, side='left')
+
+                        if self.cppn.device_state['cv_override'][node_idx] and sensor_id == 0 and "cv" in self.cppn.reactivity:
+                            # if using cv control, then A0 is modulating weight of input A1 (input 2)
+                            print(f'  reading cv signal change: {sensor_value}')
+                            weight1 = self.cppn.weights_1_raw[node_idx] / 1023 * 2 # gain on modulation
+                            weight2 = weight_mapping(sensor_value) * weight1
+                            # update weight of second input
+                            weight2 = jnp.asarray(weight2, dtype=jnp.float16)
+                            # find node connected in input 2
+                            source2_idx = self.cppn.inputs_nodes_record[node_idx, 1]
+                            print(f'  reading cv signal change: {sensor_value}, modulating input 2 with weight mod={weight2:.2f}')
+                            if source2_idx >= 0:
+                                self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[source2_idx, node_idx].set(weight2)
+                        else:
+                            source_id = sensor_value
+                            source_idx = source_id - 1
+                            old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
+                            if source_idx != old_source_idx:
+                                if source_idx < len(self.node_ids):
+                                    if old_source_idx >= 0:
+                                        unique_connection = len(np.argwhere(self.cppn.inputs_nodes_record[node_idx] == old_source_idx)) == 1
+                                        if unique_connection:
+                                            self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
+                                            graph_changed = True
+                                            print(f'  disconnecting {old_source_idx + 1} from {node_id}')
+                                        self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
+                                    if source_idx >= 0:
+                                        self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
+                                        self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
                                         graph_changed = True
-                                        print(f'  disconnecting {old_source_idx + 1} from {node_id}')
-                                    self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
-                                if source_idx >= 0:
-                                    self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
-                                    self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
-                                    graph_changed = True
-                                    print(f'  connecting {source_id} to {node_id}')
-                            else:
-                                print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
+                                        print(f'  connecting {source_id} to {node_id}')
+                                else:
+                                    print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
                     elif sensor_id in [3, 4, 5]:
-                        # if sensor_id == 3 and self.cppn.cv_override[node_idx]:
-                        #     #TODO we may want to use this in some way
-                        #     # weight 1 (sensor 3) is deactivated (no input, cv instead)
-                        #     pass
-                        # else:
                         input_idx = sensor_id - 3
-                        source_idx = self.cppn.inputs_nodes_record[node_idx, input_idx]
-                        if source_idx >= 0:
-                            weight = weight_mapping(sensor_value)
-                            self.cppn.device_state['weights'] = self.cppn.device_state['weights'].at[source_idx, node_idx].set(weight)
-                            if self.cppn.device_state['adj_matrix'][source_idx, node_idx]:
-                                print(f'  update weight {input_idx + 1} modulating source {source_idx + 1}: {weight}')
-                        self.cppn.weights_1_raw[node_idx] = sensor_value
-
-
+                        if sensor_id == 3 and self.cppn.device_state['cv_override'][node_idx] and "cv" in self.cppn.reactivity:
+                            # weight 1 (sensor 3) is deactivated (no input, cv instead)
+                            pass
+                        else:
+                            source_idx = self.cppn.inputs_nodes_record[node_idx, input_idx]
+                            if source_idx >= 0:
+                                weight = weight_mapping(sensor_value)
+                                self.cppn.device_state['weights'] = self.cppn.device_state['weights'].at[source_idx, node_idx].set(weight)
+                                if self.cppn.device_state['adj_matrix'][source_idx, node_idx]:
+                                    print(f'  update weight {input_idx + 1} modulating source {source_idx + 1}: {weight}')
+                        if input_idx == 0:
+                            self.cppn.weights_1_raw[node_idx] = sensor_value
                     elif sensor_id == 7:
                         activ_id = sensor_value
                         if 0 <= activ_id < len(self.cppn.device_state['activation_ids']):
@@ -467,50 +477,57 @@ class RS485Controller:
 
                 for sensor_id, sensor_value in node_data.items():
                     if sensor_id in [0, 1, 2]:  # Input node ids
-                    #     if self.cppn.device_state['cv_override'][node_idx] and sensor_id == 0:
-                    #         print(f'  reading cv signal change: {sensor_value}')
-                    #         # this value becomes the weight of the connection from input 2
-                    #         weight2 = weight_mapping(sensor_value)
-                    #         controlled_input_id = 1
-                    #         source2_idx = self.cppn.inputs_nodes_record[node_idx, controlled_input_id]
-                    #         if source2_idx >= 0:
-                    #             self.cppn.weight_mods = self.cppn.weight_mods.at[source2_idx, node_idx].set(weight2)
-                    #             print(f'  cv controls weight 2: {weight2}')
-                    #     else:
-                        source_id = sensor_value
-                        source_idx = source_id - 1
-                        old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
-                        if source_idx != old_source_idx:
-                            if source_idx < len(self.node_ids):
-                                if old_source_idx >= 0:
-                                    unique_connection = len(np.argwhere(self.cppn.inputs_nodes_record[node_idx] == old_source_idx)) == 1
-                                    if unique_connection:
-                                        self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
+                        if self.cppn.device_state['cv_override'][node_idx] and sensor_id == 0 and "cv" not in self.cppn.reactivity:
+                            # if not using cv control, then remap A0 to its node id
+                            sensor_value = np.searchsorted(BINS, sensor_value, side='left')
+
+                        if self.cppn.device_state['cv_override'][node_idx] and sensor_id == 0 and "cv" in self.cppn.reactivity:
+                            # if using cv control, then A0 is modulating weight of input A1 (input 2)
+                            print(f'  reading cv signal change: {sensor_value}')
+                            weight1 = self.cppn.weights_1_raw[node_idx] / 1023 * 2  # gain on modulation
+                            weight2 = weight_mapping(sensor_value) * weight1
+                            # update weight of second input
+                            weight2 = jnp.asarray(weight2, dtype=jnp.float16)
+                            # find node connected in input 2
+                            source2_idx = self.cppn.inputs_nodes_record[node_idx, 1]
+                            print(f'  reading cv signal change: {sensor_value}, modulating input 2 with weight mod={weight2:.2f}')
+                            if source2_idx >= 0:
+                                self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[source2_idx, node_idx].set(weight2)
+                        else:
+                            source_id = sensor_value
+                            source_idx = source_id - 1
+                            old_source_idx = self.cppn.inputs_nodes_record[node_idx, sensor_id]
+                            if source_idx != old_source_idx:
+                                if source_idx < len(self.node_ids):
+                                    if old_source_idx >= 0:
+                                        unique_connection = len(np.argwhere(self.cppn.inputs_nodes_record[node_idx] == old_source_idx)) == 1
+                                        if unique_connection:
+                                            self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[old_source_idx, node_idx].set(False)
+                                            graph_changed = True
+                                            print(f'  disconnecting {old_source_idx + 1} from {node_id}')
+                                        self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
+                                    if source_idx >= 0:
+                                        self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
+                                        self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
                                         graph_changed = True
-                                        print(f'  disconnecting {old_source_idx + 1} from {node_id}')
-                                    self.cppn.inputs_nodes_record[node_idx, sensor_id] = -1
-                                if source_idx >= 0:
-                                    self.cppn.inputs_nodes_record[node_idx, sensor_id] = source_idx
-                                    self.cppn.device_state['adj_matrix'] = self.cppn.device_state['adj_matrix'].at[source_idx, node_idx].set(True)
-                                    graph_changed = True
-                                    print(f'  connecting {source_id} to {node_id}')
-                            else:
-                                print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
+                                        print(f'  connecting {source_id} to {node_id}')
+                                else:
+                                    print(f'  WARNING: attempt connection from {source_idx} (not a node!) to {node_id}')
 
                     elif sensor_id in [3, 4, 5]:
-                        # if sensor_id == 3 and self.cppn.cv_override[node_idx]:
-                        #     # TODO we may want to use this in some way
-                        #     # weight 1 (sensor 3) is deactivated (no input, cv instead)
-                        #     pass
-                        # else:
                         input_idx = sensor_id - 3
-                        source_idx = self.cppn.inputs_nodes_record[node_idx, input_idx]
-                        if source_idx >= 0:
-                            weight = weight_mapping(sensor_value)
-                            self.cppn.device_state['weights'] = self.cppn.device_state['weights'].at[source_idx, node_idx].set(weight)
-                            if self.cppn.device_state['adj_matrix'][source_idx, node_idx]:
-                                print(f'  update weight {input_idx + 1} modulating source {source_idx + 1}: {sensor_value}, {weight}')
-                        self.cppn.weights_1_raw[node_idx] = sensor_value
+                        if sensor_id == 3 and self.cppn.device_state['cv_override'][node_idx] and "cv" in self.cppn.reactivity:
+                            # weight 1 (sensor 3) is deactivated (no input, cv instead)
+                            pass
+                        else:
+                            source_idx = self.cppn.inputs_nodes_record[node_idx, input_idx]
+                            if source_idx >= 0:
+                                weight = weight_mapping(sensor_value)
+                                self.cppn.device_state['weights'] = self.cppn.device_state['weights'].at[source_idx, node_idx].set(weight)
+                                if self.cppn.device_state['adj_matrix'][source_idx, node_idx]:
+                                    print(f'  update weight {input_idx + 1} modulating source {source_idx + 1}: {sensor_value}, {weight}')
+                        if input_idx == 0:
+                            self.cppn.weights_1_raw[node_idx] = sensor_value
                     elif sensor_id == 6:
                         bias = balance_mapping(sensor_value)
                         self.cppn.device_state['output_biases'] = self.cppn.device_state['output_biases'].at[output_idx].set(bias)
@@ -528,8 +545,6 @@ class RS485Controller:
                             print('  deactivating node')
                     elif sensor_id == 9:
                         pass
-                    # else:
-                    #     raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
 
         if graph_changed:
             self.cppn.update_cycles_if_needed()
@@ -538,21 +553,21 @@ class RS485Controller:
         if len(changes) > 0:
             self.cppn.needs_update = True
 
-        # update cv
-        for node_idx in range(self.cppn.n_inputs, self.cppn.n_nodes):
-            if self.cppn.device_state['cv_override'][node_idx]:
-                weight1 = self.cppn.weights_1_raw[node_idx]
-
-                # update weight of second input
-                weight2 = self.cppn.reactive_update(node_idx, weight1)
-                if weight2 is not None:
-                    weight2 = jnp.asarray(weight2, dtype=jnp.float16)
-                    # find node connected in input 2
-                    source2_idx = self.cppn.inputs_nodes_record[node_idx, 1]
-                    if source2_idx >= 0:
-                        self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[source2_idx, node_idx].set(weight2)
-                        # print(f'  cv controls weight 2: {weight2}')
-                    self.cppn.needs_update = True
+        # Time-based evolutions and audio reactivity
+        if "time" in self.cppn.reactivity or "audio" in self.cppn.reactivity:
+            for node_idx in range(self.cppn.n_inputs, self.cppn.n_nodes):
+                if self.cppn.device_state['cv_override'][node_idx]:
+                    weight1 = self.cppn.weights_1_raw[node_idx]  # gain on modulation
+                    # update weight of second input
+                    weight2 = self.cppn.reactive_update(node_idx, weight1)  # get time-based or audio-based amplified weight
+                    if weight2 is not None:
+                        weight2 = jnp.asarray(weight2, dtype=jnp.float16)
+                        # find node connected in input 2
+                        source2_idx = self.cppn.inputs_nodes_record[node_idx, 1]
+                        if source2_idx >= 0:
+                            self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[source2_idx, node_idx].set(weight2)
+                            # print(f'  cv controls weight 2: {weight2}')
+                        self.cppn.needs_update = True
 
 
 if __name__ == '__main__':

@@ -38,6 +38,7 @@ class CPPN:
         self.factor = params['factor']
         self.debug = params.get('debug', False)
 
+        self.reactivity = params['reactivity']
         # Architecture
         self.n_inputs = 5
         self.n_hidden = 9
@@ -66,8 +67,6 @@ class CPPN:
                        self.high_res: build_coordinate_grid(self.high_res, self.factor)}
         self.error_screen = {self.default_res: generate_error_screen(self.default_res, self.factor),
                              self.high_res: generate_error_screen(self.high_res, self.factor)}
-        # self.img_shapes = {self.default_res: self.coords[self.default_res][0].shape,
-        #                    self.high_res: self.coords[self.high_res][0].shape}
 
         self.device_state = self.make_initial_state()
         # Camera input
@@ -85,14 +84,16 @@ class CPPN:
         self.reactive_states = {i: {} for i in range(self.n_nodes)}
         self._x_in = None  # cached (N, n_inputs) on device
         self._x_in_key = None  # small host tuple to know when to invalidate
-        self.weights_1_raw = np.zeros([self.n_nodes])
+        self.weights_1_raw = np.zeros([self.n_nodes])  # raw value of weight input 1 (weight 3?)
 
         if params.get('load_from'):
             self.set_state(state_path=params['load_from'])
 
-        if params['with_sound']:
+        if "audio" in self.reactivity:
             self.audio = AudioReactive()
             self.audio.start()
+        else:
+            self.audio = None
 
     def make_initial_state(self):
         state = {
@@ -142,50 +143,51 @@ class CPPN:
         state = self.reactive_states[i]
 
 
-        if idx == 0:  # sine
-            if self.params['with_sound']:
-                audio_val = float(self.audio.audio_array[idx])
-                print(A * (audio_val * 2 - 1))
-                return A * (audio_val * 2 - 1)
-            else:
-                return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
-        elif idx == 1:  # smooth triangle
-            if self.params['with_sound']:
-                audio_val = float(self.audio.audio_array[idx])
-                return A * (audio_val * 2 - 1)
-            else:
-                phase = (now / period) % 1.0
-                tri = np.arcsin(np.sin(2 * np.pi * phase)) * (2 / np.pi)
-                return A * tri
-        elif idx == 2:
-            if self.params['with_sound']:
-                audio_val = float(self.audio.audio_array[idx])
-                return A * (audio_val * 2 - 1)
-            else:  # lissajous-style beating (slightly off frequencies)
-                return A * (np.sin(omega * now) * np.cos(0.97 * omega * now))
-        elif idx == 3:   # sin on sine
+        if idx == 0 and "time" in self.reactivity:  # sine
+            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
+        elif idx == 1 and "time" in self.reactivity:  # smooth triangle
+            phase = (now / period) % 1.0
+            tri = np.arcsin(np.sin(2 * np.pi * phase)) * (2 / np.pi)
+            return A * tri
+        elif idx == 2 and "time" in self.reactivity:
+            return A * (np.sin(omega * now) * np.cos(0.97 * omega * now))
+        elif idx == 3 and "time" in self.reactivity:   # sin on sine
             return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
         elif idx == 4:  # bounded chirped sine (frequency sweeps up/down slowly)
-            base = omega
-            sweep = 0.5 * omega
-            mod_period = 12.0
-            mod_phase = (now / mod_period) % 1.0
-            tri = 2 * abs(2 * mod_phase - 1) - 1  # triangle in [-1,1]
-            inst_freq = base + sweep * tri
-            state['phase'] = state.get('phase', 0.0) + inst_freq * (now - state.get('last_t', now))
-            state['last_t'] = now
-            return A * np.sin(state['phase'])
+            if "audio" in self.reactivity:
+                audio_val = float(self.audio.audio_array[idx])
+                return A * (audio_val * 2 - 1)
+            elif "time" in self.reactivity:
+                base = omega
+                sweep = 0.5 * omega
+                mod_period = 12.0
+                mod_phase = (now / mod_period) % 1.0
+                tri = 2 * abs(2 * mod_phase - 1) - 1  # triangle in [-1,1]
+                inst_freq = base + sweep * tri
+                state['phase'] = state.get('phase', 0.0) + inst_freq * (now - state.get('last_t', now))
+                state['last_t'] = now
+                return A * np.sin(state['phase'])
         elif idx == 5:  # perlin-modulated sine (alive, organic wobble)
-            drift = 0.3 * noise.noise1(now * 0.05, octaves=2)  # slow wander
-            return A * np.sin((omega * (1 + drift)) * now)
+            if "audio" in self.reactivity:
+                audio_val = float(self.audio.audio_array[idx])
+                return A * (audio_val * 2 - 1)
+            elif "time" in self.reactivity:
+                drift = 0.3 * noise.noise1(now * 0.05, octaves=2)  # slow wander
+                return A * np.sin((omega * (1 + drift)) * now)
         elif idx == 6:  # perlin drift only (aperiodic but smooth)
-            t = now * 0.2 + idx * 10.0
-            out = A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
-            return out
-        elif idx == 7:  # smooth stepped pattern (periodic but not sinusoidal)
+            if "audio" in self.reactivity:
+                audio_val = float(self.audio.audio_array[idx])
+                return A * (audio_val * 2 - 1)
+            elif "time" in self.reactivity:  # lissajous-style beating (slightly off frequencies)
+                t = now * 0.2 + idx * 10.0
+                out = A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
+                return out
+        elif idx == 7 and "time" in self.reactivity:  # smooth stepped pattern (periodic but not sinusoidal)
             t = now * 0.2 + idx * 10.0
             perlin = (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
             return A * (0.5 * np.sin(omega * now) + perlin)
+        elif idx == 8 and "time" in self.reactivity:
+            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
 
         return 0.0
 

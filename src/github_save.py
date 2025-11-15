@@ -1,17 +1,13 @@
 import subprocess
-import asyncio
-import os
 import os
 from pathlib import Path
-from datetime import date
 from  datetime import datetime
 
 repo_path = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/')
-imgs_path = repo_path / "outputs" / "mit_stata"
 
-def write_readme():
+def write_readme(output_path):
     # Collect *.png and sort newest→oldest
-    names = sorted((p.name for p in imgs_path.glob("*.png")), reverse=True)
+    names = sorted((p.name for p in output_path.glob("*.png")), reverse=True)
 
     by_day = {}
     for name in names:
@@ -26,7 +22,7 @@ def write_readme():
         day_obj = datetime(y, m, d).date()
         by_day.setdefault(day_obj, []).append(name)
 
-    lines = ["# Tangible Dreams\n\nHere are the patterns shaped by visitors of the Tangible Dreams exhibition in MIT's Stata Center (Aug 25 - Sept 3, 2025).\n\n"]
+    lines = ["# Tangible Dreams\n\nHere are the patterns shaped by my friends and I.\n\n"]
     for day_obj in sorted(by_day.keys(), reverse=True):
         day_str = day_obj.strftime("%B %d, %Y")
         lines.append(f"## {day_str}\n")
@@ -35,7 +31,7 @@ def write_readme():
             lines.append(f'<img src="./{name}" alt="{name}" width="300" loading="lazy" />')
         lines.append("</p>\n")
 
-    readme_path = imgs_path / "README.md"
+    readme_path = output_path / "README.md"
     readme_path.write_text("\n".join(lines), encoding="utf-8")
 
     return readme_path
@@ -44,7 +40,7 @@ async def save_and_push(cppn):
     print('[SAVE] saving current network')
     ts = cppn.timestamp
     cppn.save_state()  # saves .pkl and .png into output_path
-    readme_path = write_readme()
+    readme_path = write_readme(cppn.output_path)
     rel_output_path = os.path.relpath(cppn.output_path, repo_path)
     rel_readme_path = os.path.relpath(readme_path, repo_path)
     try:

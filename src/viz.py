@@ -172,6 +172,50 @@ class ModernGLBackend:
                     os.execv(sys.executable, ['python'] + sys.argv)
                 elif control == 95 and value == 127:  # Record - save state
                     asyncio.create_task(save_and_push(self.cppn))
+                # AUDIO REACTIVITY CONTROL
+                elif self.cppn.audio:
+                    v = value / 127.0
+                    # BAND GAINS -----------------------------------------------------------
+                    if control == CC_BASS_GAIN:
+                        self.cppn.audio.band_gain['bass'] = 6.0 * (v ** 2)
+                    elif control == CC_MID_GAIN:
+                        self.cppn.audio.band_gain['mid'] = 6.0 * (v ** 2)
+                    elif control == CC_TREBLE_GAIN:
+                        self.cppn.audio.band_gain['treble'] = 6.0 * (v ** 2)
+                    # GATE THRESHOLDS ------------------------------------------------------
+                    elif control == CC_OPEN_DB:
+                        self.cppn.audio.open_db = 1.0 + 9.0 * v
+                    elif control == CC_CLOSE_DB:
+                        self.cppn.audio.close_db = 0.0 + 8.0 * v
+                    # SNR RANGE ------------------------------------------------------------
+                    elif control == CC_SNR_FLOOR:
+                        self.cppn.audio.snr_floor_db = 0.0 + 10.0 * v
+                    elif control == CC_SNR_CEIL:
+                        self.cppn.audio.snr_ceil_db = 8.0 + 22.0 * v
+                    # NOISE TRACKING SPEED -------------------------------------------------
+                    elif control == CC_NOISE_LERP:
+                        # exponential between 0.90 and 0.999
+                        self.cppn.audio.noise_lerp = 0.90 * ((0.999 / 0.90) ** v)
+                    # SMOOTHING ------------------------------------------------------------
+                    # elif control == CC_ATTACK:
+                    #     self.cppn.audio.alpha_attack = 0.1 + 0.8 * v
+                    # elif control == CC_RELEASE:
+                    #     self.cppn.audio.alpha_release = 0.5 + 0.48 * v
+                    # CROSSOVERS -----------------------------------------------------------
+                    elif control == CC_BASS_TOP:
+                        min_f, max_f = 50, 400
+                        freq = min_f * ((max_f / min_f) ** v)
+                        self.cppn.audio.bands['bass'] = (20, freq)
+                    elif control == CC_MID_TOP:
+                        min_f, max_f = 500, 6000
+                        freq = min_f * ((max_f / min_f) ** v)
+                        self.cppn.audio.bands['mid'] = (200, freq)
+
+
+                # audio band control
+                # visual control
+
+
 
     def cleanup(self):
         pygame.quit()

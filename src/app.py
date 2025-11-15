@@ -11,7 +11,7 @@ from src.viz import create_backend
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
-exp_id = "mit_stata"
+exp_id = "paris"
 output_path = repo_path + f'outputs/{exp_id}/'
 os.makedirs(output_path, exist_ok=True)
 
@@ -33,9 +33,10 @@ FACTOR = 16/9
 CONTROLLER = 'rs485'
 SCREEN = 'external'  # or 'external' or 'window'
 WITH_SOUND = False
+REACTIVITY = "none"  # also "time", "cv", "audio", "time+audio"
 
 async def main():
-    params = dict(debug=DEBUG, res=RES, factor=FACTOR, with_sound=WITH_SOUND)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
+    params = dict(debug=DEBUG, res=RES, factor=FACTOR, reactivity=REACTIVITY)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
     if CONTROLLER == 'midi':
         controller = MIDIController(output_path, params)
         asyncio.create_task(controller.start_polling_loop())  # async MIDI polling
