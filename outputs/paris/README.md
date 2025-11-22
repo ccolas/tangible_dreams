@@ -3,6 +3,12 @@
 Here are the patterns shaped by my friends and I.
 
 
+## November 22, 2025
+
+<p style='display:flex;flex-wrap:wrap;gap:8px'>
+<img src="./image_2025_11_22_203755.png" alt="image_2025_11_22_203755.png" width="300" loading="lazy" />
+</p>
+
 ## November 20, 2025
 
 <p style='display:flex;flex-wrap:wrap;gap:8px'>
