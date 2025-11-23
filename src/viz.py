@@ -72,6 +72,14 @@ class ModernGLBackend:
         self.render_width = width
         self.render_height = height
 
+        # postprocessing parameters controlled by MIDI
+        self.grain_strength = 0.0
+        self.displace_strength = 0.0
+        self.chromatic_shift = 0.0
+        self.symmetry_mode = 0  # 0,1,2,3,4,...
+        self.invert = False
+        self.needs_update = False
+
         # Create an OpenGL-enabled Pygame window
         flags = DOUBLEBUF | OPENGL
         if screen_loc == 'laptop':
@@ -121,14 +129,94 @@ class ModernGLBackend:
             ''',
             fragment_shader='''
                 #version 330
+                
                 uniform sampler2D Texture;
+                
+                // image size (for pixel offsets)
+                uniform vec2 resolution;
+                
+                // visual effect controls
+                uniform float grain_strength;
+                uniform float displace_strength;
+                uniform float chroma_shift;
+                uniform bool invert_colors;
+                uniform int symmetry_mode;   // 0 = off, 1..n = different kaleidoscopes
+                
                 in vec2 v_tex;
                 out vec4 f_color;
-                void main() {
-                    f_color = texture(Texture, v_tex);
+                
+                // simple hash for grain/displacement
+                float rand(vec2 co) {
+                    return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
                 }
+                
+                vec2 kaleidoscope(vec2 uv, int sectors) {
+                    // center
+                    vec2 c = vec2(0.5, 0.5);
+                    vec2 p = uv - c;
+                
+                    float a = atan(p.y, p.x);
+                    float r = length(p);
+                
+                    // sector angle
+                    float sector = 3.141592 * 2.0 / float(sectors);
+                
+                    // wrap into sector
+                    a = mod(a, sector);
+                
+                    // reflect every second sector
+                    if (a > sector * 0.5)
+                        a = sector - a;
+                
+                    return c + r * vec2(cos(a), sin(a));
+                }
+
+                void main()
+                {
+                    vec2 uv = v_tex;
+                
+                    // --- symmetry ---
+                    if (symmetry_mode == 1) uv = kaleidoscope(uv, 6);
+                    else if (symmetry_mode == 2) uv = kaleidoscope(uv, 8);
+                    else if (symmetry_mode == 3) uv = kaleidoscope(uv, 12);
+                    else if (symmetry_mode == 4) uv = kaleidoscope(uv, 4); 
+                                   
+                    // --- displacement (pixel-scale) ---
+                    if (displace_strength > 0.001) {
+                        // max displacement = displace_strength pixels
+                        float d = displace_strength;
+                    
+                        float dx = (rand(uv * 200.0) - 0.5) * d / resolution.x;
+                        float dy = (rand(uv * 300.0) - 0.5) * d / resolution.y;
+                        uv += vec2(dx, dy);
+                    }
+                    uv = clamp(uv, vec2(0.0), vec2(1.0));
+
+                    vec3 col;
+                    col = texture(Texture, uv).rgb;
+                                    
+                    // --- invert ---
+                    if (invert_colors)
+                        col = 1.0 - col;
+                
+                    // --- grain ---
+                    if (grain_strength > 0.001) {
+                        float g = (rand(uv * 500.0) - 0.5) * grain_strength;
+                        col += vec3(g);
+                    }
+                
+                    f_color = vec4(col, 1.0);
+                }
+
             '''
         )
+        # add uniforms
+        self.prog['resolution'].value = (width, height)
+
+        self.prog['grain_strength'] = 0.0
+        self.prog['displace_strength'] = 0.0
+        self.prog['invert_colors'] = False
+        self.prog['symmetry_mode'] = 0
 
         vbo = self.ctx.buffer(vertices.tobytes())
         vao_content = [
@@ -147,6 +235,10 @@ class ModernGLBackend:
         # Render to screen
         self.ctx.clear(0.0, 0.0, 0.0)
         self.texture.use()
+        self.prog['grain_strength'].value = self.grain_strength
+        self.prog['displace_strength'].value = self.displace_strength
+        self.prog['invert_colors'].value = self.invert
+        self.prog['symmetry_mode'].value = self.symmetry_mode
         self.vao.render(moderngl.TRIANGLE_STRIP)
         pygame.display.flip()
 
@@ -164,53 +256,90 @@ class ModernGLBackend:
             #     pygame.display.toggle_fullscreen()
 
         if self.midi_in:
-            msg = self.midi_in.get_message()
-            if msg:
+            self.needs_update = False
+            while True:
+                msg = self.midi_in.get_message()
+                if not msg:
+                    break  # queue empty
+
                 data, _ts = msg
                 status, control, value = data[0:3]
-                if control == 94 and value == 127:  # Play - restart the whole script
+                # Restart
+                if control == 41 and value == 127:
                     os.execv(sys.executable, ['python'] + sys.argv)
-                elif control == 95 and value == 127:  # Record - save state
+
+                # Save state
+                elif control == 45 and value == 127:
                     asyncio.create_task(save_and_push(self.cppn))
-                # AUDIO REACTIVITY CONTROL
-                elif self.cppn.audio:
+
+                # Audio controls
+                if self.cppn.audio:
+                    # sliders are 224 to 321
                     v = value / 127.0
-                    # BAND GAINS -----------------------------------------------------------
-                    if control == CC_BASS_GAIN:
-                        self.cppn.audio.band_gain['bass'] = 6.0 * (v ** 2)
-                    elif control == CC_MID_GAIN:
-                        self.cppn.audio.band_gain['mid'] = 6.0 * (v ** 2)
-                    elif control == CC_TREBLE_GAIN:
-                        self.cppn.audio.band_gain['treble'] = 6.0 * (v ** 2)
-                    # GATE THRESHOLDS ------------------------------------------------------
-                    elif control == CC_OPEN_DB:
-                        self.cppn.audio.open_db = 1.0 + 9.0 * v
-                    elif control == CC_CLOSE_DB:
-                        self.cppn.audio.close_db = 0.0 + 8.0 * v
-                    # SNR RANGE ------------------------------------------------------------
-                    elif control == CC_SNR_FLOOR:
-                        self.cppn.audio.snr_floor_db = 0.0 + 10.0 * v
-                    elif control == CC_SNR_CEIL:
-                        self.cppn.audio.snr_ceil_db = 8.0 + 22.0 * v
-                    # NOISE TRACKING SPEED -------------------------------------------------
-                    elif control == CC_NOISE_LERP:
-                        # exponential between 0.90 and 0.999
-                        self.cppn.audio.noise_lerp = 0.90 * ((0.999 / 0.90) ** v)
-                    # SMOOTHING ------------------------------------------------------------
-                    # elif control == CC_ATTACK:
-                    #     self.cppn.audio.alpha_attack = 0.1 + 0.8 * v
-                    # elif control == CC_RELEASE:
-                    #     self.cppn.audio.alpha_release = 0.5 + 0.48 * v
-                    # CROSSOVERS -----------------------------------------------------------
-                    elif control == CC_BASS_TOP:
+                    # ---------------------------------------------------------
+                    # BAND GAINS (3 knobs)
+                    # ---------------------------------------------------------
+                    if control == 4:  # pick any unused CC
+                        self.cppn.audio.delay_seconds = (value / 127.0) * 0.60
+                        print("delay ms", self.cppn.audio.delay_seconds)
+                    if control == 21:  # BASS GAIN CC
+                        self.cppn.audio.band_gain['bass'] = (v ** 2) * 6.0
+
+                    elif control == 22:  # MID GAIN CC
+                        self.cppn.audio.band_gain['mid'] = (v ** 2) * 6.0
+
+                    elif control == 23:  # TREBLE GAIN CC
+                        self.cppn.audio.band_gain['treble'] = (v ** 2) * 6.0
+
+                    # ---------------------------------------------------------
+                    # BASELINE (1 knob)
+                    # maps to -70 dB → -40 dB
+                    # ---------------------------------------------------------
+                    elif control == 0:  # BASELINE CC
+                        self.cppn.audio.baseline_db = -50.0 + 30.0 * v
+
+                    # ---------------------------------------------------------
+                    # OPEN THRESHOLD OFFSET (1 knob)
+                    # mapped to 2 dB → 20 dB above baseline
+                    # ---------------------------------------------------------baseline
+                    elif control == 1:  # OPEN OFFSET CC
+                        self.cppn.audio.open_offset_db = 2.0 + 20.0 * v
+                        self.cppn.audio.close_offset_db = self.cppn.audio.open_offset_db - 3
+
+
+                    # ---------------------------------------------------------
+                    # BAND CROSSOVER FREQUENCIES (2 knobs)
+                    # ---------------------------------------------------------
+                    # Bass upper freq: 50 → 400 Hz (log scale)
+                    elif control == 5:  # BASS SPLIT CC
                         min_f, max_f = 50, 400
                         freq = min_f * ((max_f / min_f) ** v)
-                        self.cppn.audio.bands['bass'] = (20, freq)
-                    elif control == CC_MID_TOP:
+                        self.cppn.audio.bands['bass'] = (20.0, freq)
+                        # update mid's low freq
+                        mid_hi = self.cppn.audio.bands['mid'][1]
+                        self.cppn.audio.bands['mid'] = (freq, mid_hi)
+                        self.cppn.audio.update_with_bands()
+
+                    # Mid upper freq: 500 → 6000 Hz (log scale)
+                    elif control == 6:  # MID SPLIT CC
                         min_f, max_f = 500, 6000
                         freq = min_f * ((max_f / min_f) ** v)
-                        self.cppn.audio.bands['mid'] = (200, freq)
+                        self.cppn.audio.bands['mid'] = (self.cppn.audio.bands['bass'][1], freq)
+                        self.cppn.audio.bands['treble'] = (freq, 8000.0)
+                        self.cppn.audio.update_with_bands()
+                if control == 2:
+                    self.grain_strength = (value/127)
+                    self.needs_update = True
+                if control == 3:
+                    self.displace_strength = ((value / 127) ** 2) * 50.0  # up to 20 pixels
+                    self.needs_update = True
 
+                if control == 60 and value == 127:
+                    self.invert = not self.invert
+                    self.needs_update = True
+                if control == 46 and value == 127:
+                    self.symmetry_mode = (self.symmetry_mode + 1) % 6
+                    self.needs_update = True
 
                 # audio band control
                 # visual control
