@@ -32,7 +32,8 @@ RES = 1024
 FACTOR = 16/9
 CONTROLLER = 'rs485'
 SCREEN = 'external'  # or 'external' or 'window'
-REACTIVITY = "time+audio"  # also "time", "cv", "audio", "time+audio"
+REACTIVITY = "audio"  # "time", "audio", or "cv"
+AUDIO_MODE = "simple"  # "simple" (3 EMA signals) or "flux" (3 EMA + 3 flux)
 VISUALIZE_AUDIO = True
 
 def update_reactivity(cppn):
@@ -40,7 +41,7 @@ def update_reactivity(cppn):
     All updates collected in numpy, single JAX transfer at the end."""
     import numpy as np
     from jax import numpy as jnp
-    if "time" not in cppn.reactivity and "audio" not in cppn.reactivity:
+    if not any(m in cppn.reactivity for m in ("time", "audio", "cv")):
         return
     cv_override = np.asarray(cppn.device_state['cv_override'])
     weight_mods = np.array(cppn.device_state['weight_mods'])  # copy — np.asarray returns read-only view of JAX array
@@ -60,7 +61,7 @@ def update_reactivity(cppn):
 
 async def main():
     params = dict(debug=DEBUG, res=RES, factor=FACTOR, visualize_audio=VISUALIZE_AUDIO,
-                  reactivity=REACTIVITY)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
+                  reactivity=REACTIVITY, audio_mode=AUDIO_MODE)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
     if CONTROLLER == 'midi':
         controller = MIDIController(output_path, params)
         asyncio.create_task(controller.start_polling_loop())  # async MIDI polling

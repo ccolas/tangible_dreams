@@ -14,7 +14,7 @@ from viz import create_backend
 from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping, noise
 from save.misc.error_screen import generate_error_screen
 from save.misc.compute_n_cycles import compute_rounds
-from src.sound_input import AudioGate
+from src.sound_input import AudioGate, AudioGateSimple
 
 
 SAMPLE_RATE = 44100
@@ -95,7 +95,9 @@ class CPPN:
             self.set_state(state_path=params['load_from'])
 
         if "audio" in self.reactivity:
-            self.audio = AudioGate(visualize=params['visualize_audio'])
+            audio_mode = params.get('audio_mode', 'flux')
+            cls = AudioGate if audio_mode == 'flux' else AudioGateSimple
+            self.audio = cls(visualize=params['visualize_audio'])
             self.audio.start()
         else:
             self.audio = None
@@ -128,6 +130,14 @@ class CPPN:
         Reactive function per node.
         - i: node index (0-based)
         - w: normalized control in [0,1] from weight 1 (sensor value / 1023)
+
+        Modes:
+          "time"  — all nodes time-controlled
+          "audio" — idx 0,1,8 + outputs = time;
+                    EMA: idx 2→bass, 3→mid, 6→treble
+                    Flux: idx 4→bass, 7→mid, 5→treble
+          "cv"    — idx 0,1,8 + outputs = time; cv nodes driven by RS485 hardware
+        Time nodes (idx 0,1,8) and outputs are ALWAYS active.
         """
         w /= 1023
         now = self.time
@@ -139,39 +149,49 @@ class CPPN:
         omega = 2 * np.pi / period / 2
         A = 2.0 * w
 
-        # === Outputs: all same simple sine ===
+        # === Outputs: always time-controlled (simple sine) ===
         if i in self.output_ids:
             return A * np.sin(omega * now + i)
 
-        # === Middles: 9 different dynamics ===
         idx = i - self.n_inputs  # 0..8
-        state = self.reactive_states[i]
 
-
-        # === Time-varying nodes: idx 0, 1, 6 (global 5, 6, 11) ===
-        if idx == 0 and "time" in self.reactivity:  # sine + harmonics
-            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
-        elif idx == 1 and "time" in self.reactivity:  # Perlin-modulated sine
-            drift = 0.3 * noise.noise1(now * 0.05, octaves=2)
-            return A * np.sin((omega * (1 + drift)) * now)
-        elif idx == 6 and "time" in self.reactivity:  # Perlin drift
-            t = now * 0.2 + idx * 10.0
-            return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
-
-        # === Audio nodes (3 band powers: bass, mid, treble) ===
-        # audio_array: [bass, mid, treble]
-        #   idx 2, 4 (nodes 7, 9):   bass   → arr[0]
-        #   idx 3, 5 (nodes 8, 10):  mid    → arr[1]
-        #   idx 7, 8 (nodes 12, 13): treble → arr[2]
-        elif idx in (2, 3, 4, 5, 7, 8) and "audio" in self.reactivity:
-            audio_idx = {2: 0, 4: 0, 3: 1, 5: 1, 7: 2, 8: 2}[idx]
+        # === Audio nodes — only in "audio" mode ===
+        # EMA: idx 2→bass, 3→mid, 6→treble  |  Flux: idx 4→bass, 7→mid, 5→treble
+        if idx in (2, 3, 4, 5, 6, 7) and "audio" in self.reactivity:
+            if self.audio.mode == "flux":
+                audio_idx = {2: 0, 3: 1, 6: 2, 4: 3, 7: 4, 5: 5}[idx]
+            else:
+                audio_idx = {2: 0, 4: 0, 3: 1, 7: 1, 6: 2, 5: 2}[idx]
             audio_val = float(self.audio.audio_array[audio_idx])
             return A * (audio_val * 2 - 1)
 
-        # Fallback: time-varying Perlin for any unmatched node
-        elif "time" in self.reactivity:
-            t = now * 0.2 + idx * 10.0
+        # === Time dynamics — each node has a distinct schedule ===
+        if idx == 0:    # sine + harmonics
+            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
+        elif idx == 1:  # Perlin-modulated sine
+            drift = 0.3 * noise.noise1(now * 0.05, octaves=2)
+            return A * np.sin((omega * (1 + drift)) * now)
+        elif idx == 2:  # slow triangle wave
+            phase = (now * omega * 0.3) % (2 * np.pi)
+            tri = 2 * abs(2 * (phase / (2 * np.pi)) - 1) - 1
+            return A * tri
+        elif idx == 3:  # phase-shifted sine, longer period
+            return A * np.sin(omega * 0.7 * now + 2.1)
+        elif idx == 4:  # soft square (tanh of fast sine)
+            return A * np.tanh(3.0 * np.sin(omega * 1.3 * now + 0.7))
+        elif idx == 5:  # two beating frequencies
+            return A * 0.5 * (np.sin(omega * now) + np.sin(omega * 1.07 * now))
+        elif idx == 6:  # Perlin drift
+            t = now * 0.2 + 60.0
             return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
+        elif idx == 7:  # stepped Perlin (quantized)
+            t = now * 0.15 + 70.0
+            raw = noise.noise1(t, octaves=2)
+            return A * (round(raw * 4) / 4) * 2
+        elif idx == 8:  # fast Perlin + slow sine envelope
+            envelope = 0.5 + 0.5 * np.sin(omega * 0.2 * now)
+            t = now * 0.8 + 80.0
+            return A * envelope * (2 * noise.noise1(t, octaves=2) - 1.0)
 
         return 0.0
 

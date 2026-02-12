@@ -275,12 +275,13 @@ class ModernGLBackend:
                 elif control == 45 and value == 127:
                     asyncio.create_task(save_and_push(self.cppn, viz_params=self._viz_params()))
 
-                # Slider layout:
-                #   0: grain, 1: displacement, 2: release,
-                #   3: free, 4: delay, 5: bass gain, 6: mid gain, 7: treble gain
-                # Knob layout:
-                #   18: bass low cutoff, 19: bass/mid crossover,
-                #   21: bass open%, 22: mid open%, 23: treble open%
+                # Slider layout (CC 0-7):
+                #   0: grain, 1: displacement, 2: delay,
+                #   3: attack, 4: release, 5: bass gain, 6: mid gain, 7: treble gain
+                # Knob layout (CC 16-23):
+                #   17: flux decay, 18: bass lo cut, 19: bass/mid xover,
+                #   20: mid/treble xover, 21: bass gate%, 22: mid gate%, 23: treble gate%
+                # Button: CC 66 = set delay to measured
                 v = value / 127.0
 
                 if control == 0:
@@ -291,41 +292,61 @@ class ModernGLBackend:
                     self.needs_update = True
 
                 if self.cppn.audio:
-                    if control == 2:
-                        self.cppn.audio.alpha_attack = v * 0.95  # 0=instant, 0.95=long tail
-                    elif control == 3:
-                        self.cppn.audio.alpha_release = v * 0.95  # 0=instant, 0.95=long tail
-                    elif control == 4:
-                        self.cppn.audio.delay_seconds = v * 0.150  # 0-150ms
-                    elif control == 68 and value == 127:
-                        self.cppn.audio.delay_seconds = self.measured_delay
-                        print(f"[Delay] set to measured: {self.measured_delay*1000:.0f}ms")
-                    elif control == 5:
-                        self.cppn.audio.band_gain['bass'] = (v ** 2) * 8.0
+                    audio = self.cppn.audio
+                    is_flux = getattr(audio, 'mode', 'simple') == 'flux'
+
+                    if is_flux:
+                        # Flux layout: 2=delay, 3=attack, 4=release, 17=flux_decay, 66=set delay
+                        if control == 2:
+                            audio.delay_seconds = v * 0.150
+                        elif control == 3:
+                            audio.alpha_attack = v * 0.95
+                        elif control == 4:
+                            audio.alpha_release = v * 0.95
+                        elif control == 66 and value == 127:
+                            audio.delay_seconds = self.measured_delay
+                            print(f"[Delay] set to measured: {self.measured_delay*1000:.0f}ms")
+                        elif control == 17:
+                            audio.flux_decay = 0.5 + v * 0.49
+                    else:
+                        # Simple layout: 2=attack, 3=release, 4=delay, 68=set delay
+                        if control == 2:
+                            audio.alpha_attack = v * 0.95
+                        elif control == 3:
+                            audio.alpha_release = v * 0.95
+                        elif control == 4:
+                            audio.delay_seconds = v * 0.150
+                        elif control == 68 and value == 127:
+                            audio.delay_seconds = self.measured_delay
+                            print(f"[Delay] set to measured: {self.measured_delay*1000:.0f}ms")
+
+                    # Shared controls (both modes)
+                    if control == 5:
+                        audio.band_gain['bass'] = (v ** 2) * 8.0
                     elif control == 6:
-                        self.cppn.audio.band_gain['mid'] = (v ** 2) * 8.0
+                        audio.band_gain['mid'] = (v ** 2) * 8.0
                     elif control == 7:
-                        self.cppn.audio.band_gain['treble'] = (v ** 2) * 8.0
+                        audio.band_gain['treble'] = (v ** 2) * 8.0
                     elif control == 18:
-                        # Bass low cutoff: 20-100 Hz
                         freq = 20.0 + v * 80.0
-                        self.cppn.audio.bands['bass'] = (freq, self.cppn.audio.bands['bass'][1])
-                        self.cppn.audio.update_with_bands()
+                        audio.bands['bass'] = (freq, audio.bands['bass'][1])
+                        audio.update_with_bands()
                     elif control == 19:
-                        # Bass/mid crossover: 50-500 Hz
                         freq = 50.0 + v * 450.0
-                        self.cppn.audio.bands['bass'] = (self.cppn.audio.bands['bass'][0], freq)
-                        self.cppn.audio.bands['mid'] = (freq, self.cppn.audio.bands['mid'][1])
-                        self.cppn.audio.update_with_bands()
+                        audio.bands['bass'] = (audio.bands['bass'][0], freq)
+                        audio.bands['mid'] = (freq, audio.bands['mid'][1])
+                        audio.update_with_bands()
+                    elif control == 20:
+                        freq = 1000.0 + v * 5000.0
+                        audio.bands['mid'] = (audio.bands['mid'][0], freq)
+                        audio.bands['treble'] = (freq, audio.bands['treble'][1])
+                        audio.update_with_bands()
                     elif control == 21:
-                        # Bass gate open fraction: 0-20%
-                        self.cppn.audio.gate_target_fraction['bass'] = v * 0.40
+                        audio.gate_target_fraction['bass'] = v * 0.40
                     elif control == 22:
-                        # Mid gate open fraction: 0-20%
-                        self.cppn.audio.gate_target_fraction['mid'] = v * 0.40
+                        audio.gate_target_fraction['mid'] = v * 0.40
                     elif control == 23:
-                        # Treble gate open fraction: 0-20%
-                        self.cppn.audio.gate_target_fraction['treble'] = v * 0.40
+                        audio.gate_target_fraction['treble'] = v * 0.40
 
                 if control == 60 and value == 127:
                     self.invert = not self.invert
