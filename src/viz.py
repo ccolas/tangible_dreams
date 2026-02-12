@@ -79,6 +79,7 @@ class ModernGLBackend:
         self.symmetry_mode = 0  # 0,1,2,3,4,...
         self.invert = False
         self.needs_update = False
+        self.measured_delay = 0.030  # updated by main loop
 
         # Create an OpenGL-enabled Pygame window
         flags = DOUBLEBUF | OPENGL
@@ -275,31 +276,56 @@ class ModernGLBackend:
                     asyncio.create_task(save_and_push(self.cppn, viz_params=self._viz_params()))
 
                 # Slider layout:
-                #   0: grain, 1: displacement, 2: audio delay,
-                #   3: EMA sensitivity, 4: flux sensitivity,
-                #   5: bass gain, 6: mid gain, 7: treble gain
+                #   0: grain, 1: displacement, 2: release,
+                #   3: free, 4: delay, 5: bass gain, 6: mid gain, 7: treble gain
+                # Knob layout:
+                #   18: bass low cutoff, 19: bass/mid crossover,
+                #   21: bass open%, 22: mid open%, 23: treble open%
                 v = value / 127.0
 
                 if control == 0:
-                    self.grain_strength = v
+                    self.grain_strength = v * 0.7
                     self.needs_update = True
                 elif control == 1:
-                    self.displace_strength = (v ** 2) * 0.05  # 0-5% of screen width
+                    self.displace_strength = (v ** 2) * 0.03  # 0-5% of screen width
                     self.needs_update = True
 
                 if self.cppn.audio:
                     if control == 2:
-                        self.cppn.audio.delay_seconds = v * 0.60
+                        self.cppn.audio.alpha_attack = v * 0.95  # 0=instant, 0.95=long tail
                     elif control == 3:
-                        self.cppn.audio.ema_sensitivity = (v ** 2) * 4.0
+                        self.cppn.audio.alpha_release = v * 0.95  # 0=instant, 0.95=long tail
                     elif control == 4:
-                        self.cppn.audio.flux_sensitivity = (v ** 2) * 2.0
+                        self.cppn.audio.delay_seconds = v * 0.150  # 0-150ms
+                    elif control == 68 and value == 127:
+                        self.cppn.audio.delay_seconds = self.measured_delay
+                        print(f"[Delay] set to measured: {self.measured_delay*1000:.0f}ms")
                     elif control == 5:
                         self.cppn.audio.band_gain['bass'] = (v ** 2) * 8.0
                     elif control == 6:
                         self.cppn.audio.band_gain['mid'] = (v ** 2) * 8.0
                     elif control == 7:
                         self.cppn.audio.band_gain['treble'] = (v ** 2) * 8.0
+                    elif control == 18:
+                        # Bass low cutoff: 20-100 Hz
+                        freq = 20.0 + v * 80.0
+                        self.cppn.audio.bands['bass'] = (freq, self.cppn.audio.bands['bass'][1])
+                        self.cppn.audio.update_with_bands()
+                    elif control == 19:
+                        # Bass/mid crossover: 50-500 Hz
+                        freq = 50.0 + v * 450.0
+                        self.cppn.audio.bands['bass'] = (self.cppn.audio.bands['bass'][0], freq)
+                        self.cppn.audio.bands['mid'] = (freq, self.cppn.audio.bands['mid'][1])
+                        self.cppn.audio.update_with_bands()
+                    elif control == 21:
+                        # Bass gate open fraction: 0-20%
+                        self.cppn.audio.gate_target_fraction['bass'] = v * 0.40
+                    elif control == 22:
+                        # Mid gate open fraction: 0-20%
+                        self.cppn.audio.gate_target_fraction['mid'] = v * 0.40
+                    elif control == 23:
+                        # Treble gate open fraction: 0-20%
+                        self.cppn.audio.gate_target_fraction['treble'] = v * 0.40
 
                 if control == 60 and value == 127:
                     self.invert = not self.invert

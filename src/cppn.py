@@ -1,3 +1,7 @@
+import os
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')  # don't grab 75% of VRAM
+os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.5')   # cap at 50% of VRAM
+
 import time
 import numpy as np
 import jax.numpy as jnp
@@ -10,7 +14,7 @@ from viz import create_backend
 from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping, noise
 from save.misc.error_screen import generate_error_screen
 from save.misc.compute_n_cycles import compute_rounds
-from src.sound_input import AudioReactive
+from src.sound_input import AudioGate
 
 
 SAMPLE_RATE = 44100
@@ -91,7 +95,7 @@ class CPPN:
             self.set_state(state_path=params['load_from'])
 
         if "audio" in self.reactivity:
-            self.audio = AudioReactive(visualize=params['visualize_audio'])
+            self.audio = AudioGate(visualize=params['visualize_audio'])
             self.audio.start()
         else:
             self.audio = None
@@ -144,26 +148,23 @@ class CPPN:
         state = self.reactive_states[i]
 
 
-        # === Time-varying nodes: idx 0, 3, 6 (global 5, 8, 11) ===
+        # === Time-varying nodes: idx 0, 1, 6 (global 5, 6, 11) ===
         if idx == 0 and "time" in self.reactivity:  # sine + harmonics
             return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
-        elif idx == 3 and "time" in self.reactivity:  # Perlin-modulated sine
+        elif idx == 1 and "time" in self.reactivity:  # Perlin-modulated sine
             drift = 0.3 * noise.noise1(now * 0.05, octaves=2)
             return A * np.sin((omega * (1 + drift)) * now)
         elif idx == 6 and "time" in self.reactivity:  # Perlin drift
             t = now * 0.2 + idx * 10.0
             return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
 
-        # === Audio nodes (6 signals from EMA + spectral flux) ===
-        # audio_array: [bass_ema, bass_flux, mid_ema, mid_flux, treble_ema, treble_flux]
-        #   idx 1 (node 6):  bass_ema   → arr[0]
-        #   idx 2 (node 7):  bass_flux  → arr[1]
-        #   idx 4 (node 9):  mid_ema    → arr[2]
-        #   idx 5 (node 10): mid_flux   → arr[3]
-        #   idx 7 (node 12): treble_ema → arr[4]
-        #   idx 8 (node 13): treble_flux→ arr[5]
-        elif idx in (1, 2, 4, 5, 7, 8) and "audio" in self.reactivity:
-            audio_idx = {1: 0, 2: 1, 4: 2, 5: 3, 7: 4, 8: 5}[idx]
+        # === Audio nodes (3 band powers: bass, mid, treble) ===
+        # audio_array: [bass, mid, treble]
+        #   idx 2, 4 (nodes 7, 9):   bass   → arr[0]
+        #   idx 3, 5 (nodes 8, 10):  mid    → arr[1]
+        #   idx 7, 8 (nodes 12, 13): treble → arr[2]
+        elif idx in (2, 3, 4, 5, 7, 8) and "audio" in self.reactivity:
+            audio_idx = {2: 0, 4: 0, 3: 1, 5: 1, 7: 2, 8: 2}[idx]
             audio_val = float(self.audio.audio_array[audio_idx])
             return A * (audio_val * 2 - 1)
 
@@ -175,18 +176,24 @@ class CPPN:
         return 0.0
 
     def update(self, res=None):
+        import time as _t
         self.last_update_saved = False
         if res is None:
             res = self.default_res
         coords_x, coords_y = self.coords[res]
 
+        # _t0 = _t.time()
         key = self._inputs_key(res)
+        # _t1 = _t.time()
         if (self._x_in is None) or (key != self._x_in_key):
-            print(f"  [CPPN] recomputing inputs (cache miss)")
             self._x_in = self._compute_inputs(self.device_state, coords_x, coords_y)  # (N, n_in)
             self._x_in_key = key
-
+        # _t2 = _t.time()
         img = self._run_cycles(self.device_state, self._x_in, coords_x, self.n_cycles)  # uint8 on device
+        # _t3 = _t.time()
+        img.block_until_ready()
+        # _t4 = _t.time()
+        # print(f"  key={(_t1-_t0)*1000:.1f}ms  inputs={(_t2-_t1)*1000:.1f}ms  run={(_t3-_t2)*1000:.1f}ms  sync={(_t4-_t3)*1000:.1f}ms  cycles={self.n_cycles}")
         self.needs_update = False
         return img
 

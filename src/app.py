@@ -32,7 +32,7 @@ RES = 1024
 FACTOR = 16/9
 CONTROLLER = 'rs485'
 SCREEN = 'external'  # or 'external' or 'window'
-REACTIVITY = "time"  # also "time", "cv", "audio", "time+audio"
+REACTIVITY = "time+audio"  # also "time", "cv", "audio", "time+audio"
 VISUALIZE_AUDIO = True
 
 async def main():
@@ -58,19 +58,21 @@ async def main():
     )
 
     try:
-        # Generate initial image
-        # out = controller.cppn.update()
-        # viz.update(out)
+        from collections import deque
+        frame_times = deque(maxlen=30)
         while True:
             if controller.cppn.needs_update:
                 t_start = time.time()
                 out = controller.cppn.update()
                 t_forward = time.time()
                 viz.update(out)
-                t_viz = time.time()
-                time_forward = (t_forward - t_start)  * 1000
-                time_viz = (t_viz - t_forward) * 1000
-                print(f"Times: forward={time_forward:.2f}ms, viz={time_viz:.2f}ms")
+                t_end = time.time()
+                time_forward = (t_forward - t_start) * 1000
+                time_viz = (t_end - t_forward) * 1000
+                frame_times.append(t_end - t_start)
+                viz.measured_delay = sum(frame_times) / len(frame_times)
+                delay_ms = (controller.cppn.audio.delay_seconds * 1000) if controller.cppn.audio else 0
+                print(f"Times: forward={timeyes_forward:.2f}ms, viz={time_viz:.2f}ms, delay={delay_ms:.0f}ms")
             elif viz.needs_update:
                 viz.update(out)
             await asyncio.sleep(0.001)
