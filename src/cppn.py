@@ -5,12 +5,11 @@ from jax import random
 from PIL import Image
 import pickle
 import jax
-import sounddevice as sd
 
 from viz import create_backend
 from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping, noise
-from src.misc.error_screen import generate_error_screen
-from src.misc.compute_n_cycles import compute_rounds
+from save.misc.error_screen import generate_error_screen
+from save.misc.compute_n_cycles import compute_rounds
 from src.sound_input import AudioReactive
 
 
@@ -34,7 +33,7 @@ class CPPN:
 
         # General config
         self.default_res = 1024
-        self.high_res = 2048
+        self.high_res = 1900
         self.factor = params['factor']
         self.debug = params.get('debug', False)
 
@@ -86,11 +85,13 @@ class CPPN:
         self._x_in_key = None  # small host tuple to know when to invalidate
         self.weights_1_raw = np.zeros([self.n_nodes])  # raw value of weight input 1 (weight 3?)
 
+
+
         if params.get('load_from'):
             self.set_state(state_path=params['load_from'])
 
         if "audio" in self.reactivity:
-            self.audio = AudioReactive()
+            self.audio = AudioReactive(visualize=params['visualize_audio'])
             self.audio.start()
         else:
             self.audio = None
@@ -143,51 +144,33 @@ class CPPN:
         state = self.reactive_states[i]
 
 
-        if idx == 0 and "time" in self.reactivity:  # sine
+        # === Time-varying nodes: idx 0, 3, 6 (global 5, 8, 11) ===
+        if idx == 0 and "time" in self.reactivity:  # sine + harmonics
             return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
-        elif idx == 1 and "time" in self.reactivity:  # smooth triangle
-            phase = (now / period) % 1.0
-            tri = np.arcsin(np.sin(2 * np.pi * phase)) * (2 / np.pi)
-            return A * tri
-        elif idx == 2 and "time" in self.reactivity:
-            return A * (np.sin(omega * now) * np.cos(0.97 * omega * now))
-        elif idx == 3 and "time" in self.reactivity:   # sin on sine
-            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
-        elif idx == 4:  # bounded chirped sine (frequency sweeps up/down slowly)
-            if "audio" in self.reactivity:
-                audio_val = float(self.audio.audio_array[idx])
-                return A * (audio_val * 2 - 1)
-            elif "time" in self.reactivity:
-                base = omega
-                sweep = 0.5 * omega
-                mod_period = 12.0
-                mod_phase = (now / mod_period) % 1.0
-                tri = 2 * abs(2 * mod_phase - 1) - 1  # triangle in [-1,1]
-                inst_freq = base + sweep * tri
-                state['phase'] = state.get('phase', 0.0) + inst_freq * (now - state.get('last_t', now))
-                state['last_t'] = now
-                return A * np.sin(state['phase'])
-        elif idx == 5:  # perlin-modulated sine (alive, organic wobble)
-            if "audio" in self.reactivity:
-                audio_val = float(self.audio.audio_array[idx])
-                return A * (audio_val * 2 - 1)
-            elif "time" in self.reactivity:
-                drift = 0.3 * noise.noise1(now * 0.05, octaves=2)  # slow wander
-                return A * np.sin((omega * (1 + drift)) * now)
-        elif idx == 6:  # perlin drift only (aperiodic but smooth)
-            if "audio" in self.reactivity:
-                audio_val = float(self.audio.audio_array[idx])
-                return A * (audio_val * 2 - 1)
-            elif "time" in self.reactivity:  # lissajous-style beating (slightly off frequencies)
-                t = now * 0.2 + idx * 10.0
-                out = A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
-                return out
-        elif idx == 7 and "time" in self.reactivity:  # smooth stepped pattern (periodic but not sinusoidal)
+        elif idx == 3 and "time" in self.reactivity:  # Perlin-modulated sine
+            drift = 0.3 * noise.noise1(now * 0.05, octaves=2)
+            return A * np.sin((omega * (1 + drift)) * now)
+        elif idx == 6 and "time" in self.reactivity:  # Perlin drift
             t = now * 0.2 + idx * 10.0
-            perlin = (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
-            return A * (0.5 * np.sin(omega * now) + perlin)
-        elif idx == 8 and "time" in self.reactivity:
-            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
+            return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
+
+        # === Audio nodes (6 signals from EMA + spectral flux) ===
+        # audio_array: [bass_ema, bass_flux, mid_ema, mid_flux, treble_ema, treble_flux]
+        #   idx 1 (node 6):  bass_ema   → arr[0]
+        #   idx 2 (node 7):  bass_flux  → arr[1]
+        #   idx 4 (node 9):  mid_ema    → arr[2]
+        #   idx 5 (node 10): mid_flux   → arr[3]
+        #   idx 7 (node 12): treble_ema → arr[4]
+        #   idx 8 (node 13): treble_flux→ arr[5]
+        elif idx in (1, 2, 4, 5, 7, 8) and "audio" in self.reactivity:
+            audio_idx = {1: 0, 2: 1, 4: 2, 5: 3, 7: 4, 8: 5}[idx]
+            audio_val = float(self.audio.audio_array[audio_idx])
+            return A * (audio_val * 2 - 1)
+
+        # Fallback: time-varying Perlin for any unmatched node
+        elif "time" in self.reactivity:
+            t = now * 0.2 + idx * 10.0
+            return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
 
         return 0.0
 
@@ -310,6 +293,76 @@ class CPPN:
         if self.n_cycles is None: self.n_cycles = 1
         print(f'Setting n_cycles to {self.n_cycles}')
 
+    def apply_postprocessing(self, img):
+        """Apply post-processing matching the GLSL shader order:
+        symmetry → displacement → (sample) → invert → grain
+        """
+        H, W = img.shape[:2]
+        out = img.astype(np.float32) / 255.0
+
+        # Build normalized UV coords [0,1]
+        uu, vv = np.meshgrid(np.linspace(0, 1, W, endpoint=False),
+                             np.linspace(0, 1, H, endpoint=False))
+        uv_x = uu
+        uv_y = vv
+
+        # --- symmetry (operates on UV) ---
+        if self.symmetry_mode != 0:
+            sector_map = {1: 6, 2: 8, 3: 12, 4: 4}
+            sectors = sector_map.get(self.symmetry_mode, self.symmetry_mode)
+            uv_x, uv_y = self._kaleidoscope_uv(uv_x, uv_y, sectors)
+
+        # --- displacement (operates on UV) ---
+        if self.displace_strength > 0.001:
+            d = self.displace_strength  # fraction of screen (0-0.05)
+            dx = (self._hash2d(uv_x * 200.0, uv_y * 200.0) - 0.5) * d
+            dy = (self._hash2d(uv_x * 300.0, uv_y * 300.0) - 0.5) * d
+            uv_x = uv_x + dx
+            uv_y = uv_y + dy
+
+        # Clamp and sample
+        uv_x = np.clip(uv_x, 0.0, 1.0 - 1e-6)
+        uv_y = np.clip(uv_y, 0.0, 1.0 - 1e-6)
+        ix = (uv_x * W).astype(int)
+        iy = (uv_y * H).astype(int)
+        out = out[iy, ix]
+
+        # --- invert ---
+        if self.invert:
+            out = 1.0 - out
+
+        # --- grain (uniform monochrome, matching shader) ---
+        if self.grain_strength > 0.001:
+            g = (self._hash2d(uv_x * 500.0, uv_y * 500.0) - 0.5) * self.grain_strength
+            out = out + g[:, :, np.newaxis]
+
+        out = np.clip(out, 0.0, 1.0)
+        return (out * 255).astype(np.uint8)
+
+    @staticmethod
+    def _hash2d(x, y):
+        """Deterministic hash matching GLSL: fract(sin(dot(co, vec2(12.9898,78.233))) * 43758.5453)"""
+        dot = x * 12.9898 + y * 78.233
+        return np.mod(np.sin(dot) * 43758.5453, 1.0)
+
+    @staticmethod
+    def _kaleidoscope_uv(uv_x, uv_y, sectors):
+        """Kaleidoscope matching the GLSL shader."""
+        cx, cy = 0.5, 0.5
+        px = uv_x - cx
+        py = uv_y - cy
+
+        a = np.arctan2(py, px)
+        r = np.sqrt(px * px + py * py)
+
+        sector = 2.0 * np.pi / sectors
+        a = np.mod(a, sector)
+
+        # Reflect every second sector
+        reflect = a > sector * 0.5
+        a = np.where(reflect, sector - a, a)
+
+        return cx + r * np.cos(a), cy + r * np.sin(a)
 
     # def sample_network(self):
     #     while True:
@@ -414,20 +467,38 @@ class CPPN:
     #     return adj
 
 
-    def save_state(self):
+    def save_state(self, viz_params=None):
         if not self.last_update_saved:
             timestamp = self.timestamp
             pkl_path = f"{self.output_path}/state_{timestamp}.pkl"
             img_path = f"{self.output_path}/image_{timestamp}.png"
+            save_data = self.state
+            if viz_params is not None:
+                save_data['viz_params'] = viz_params
             with open(pkl_path, 'wb') as f:
-                pickle.dump(self.state, f)
-            img = self.update(res=2048)  # uint8 on device
-            display_image = np.array(img)  # no *255 here
+                pickle.dump(save_data, f)
+            del save_data
+            self._x_in = None  # free 1024-res GPU tensor before high-res render
+            img = self.update(res=self.high_res)  # uint8 on device
+            display_image = np.array(img)
+            del img
+
+            # Apply post-processing effects if viz_params provided
+            if viz_params is not None:
+                self.grain_strength = viz_params.get('grain_strength', 0.0)
+                self.displace_strength = viz_params.get('displace_strength', 0.0)
+                self.invert = viz_params.get('invert', False)
+                self.symmetry_mode = viz_params.get('symmetry_mode', 0)
+                display_image = self.apply_postprocessing(display_image)
+
+            # Flip vertically to match OpenGL display orientation
+            display_image = np.flipud(display_image)
+
             print(f'Checkpoints saved at {img_path}')
             im = Image.fromarray(display_image)
             im.save(img_path)
             self.last_update_saved = True
-            return img
+            # return img
 
     def _inputs_key(self, res=None):
         p1 = np.array(self.device_state['input_params1'])
@@ -457,6 +528,7 @@ class CPPN:
         if state is None:
             with open(state_path, "rb") as f:
                 state = pickle.load(f)
+        self.viz_params = state.pop('viz_params', None)
         self.device_state = {k: jnp.array(v) for k, v in state.items()}
 
     @property

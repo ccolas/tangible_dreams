@@ -7,6 +7,7 @@ repo_path = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '
 
 def write_readme(output_path):
     # Collect *.png and sort newest→oldest
+    output_path = Path(output_path)
     names = sorted((p.name for p in output_path.glob("*.png")), reverse=True)
 
     by_day = {}
@@ -36,13 +37,16 @@ def write_readme(output_path):
 
     return readme_path
 
-async def save_and_push(cppn):
+async def save_and_push(cppn, viz_params=None):
     print('[SAVE] saving current network')
     ts = cppn.timestamp
-    cppn.save_state()  # saves .pkl and .png into output_path
+    cppn.save_state(viz_params=viz_params)  # saves .pkl and .png into output_path
     readme_path = write_readme(cppn.output_path)
     rel_output_path = os.path.relpath(cppn.output_path, repo_path)
     rel_readme_path = os.path.relpath(readme_path, repo_path)
+    if "test" in cppn.output_path:
+        print(f"[INFO] Saved, but skipped push (test) {ts}")
+        return
     try:
         subprocess.run(["git", "add", rel_output_path, rel_readme_path], cwd=repo_path, check=True)
         # Commit with timestamp in message

@@ -13,7 +13,7 @@ END_BYTE = 0xBB
 TIMEOUT = 0.004  # 4ms for update
 TIMEOUT_TOTAL = 1  # generous first/full read
 MAX_RETRIES = 3
-NODES = [6] #[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+NODES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 NODES_TO_PLOT = NODES
 
 # === Latency check ===

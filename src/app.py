@@ -5,13 +5,13 @@ import time
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.midi import MIDIController
+from save.midi import MIDIController
 from src.rs485 import RS485Controller
 from src.viz import create_backend
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
-exp_id = "paris"
+exp_id = "tests"
 output_path = repo_path + f'outputs/{exp_id}/'
 os.makedirs(output_path, exist_ok=True)
 
@@ -32,11 +32,12 @@ RES = 1024
 FACTOR = 16/9
 CONTROLLER = 'rs485'
 SCREEN = 'external'  # or 'external' or 'window'
-WITH_SOUND = False
-REACTIVITY = "none"  # also "time", "cv", "audio", "time+audio"
+REACTIVITY = "time"  # also "time", "cv", "audio", "time+audio"
+VISUALIZE_AUDIO = True
 
 async def main():
-    params = dict(debug=DEBUG, res=RES, factor=FACTOR, reactivity=REACTIVITY)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
+    params = dict(debug=DEBUG, res=RES, factor=FACTOR, visualize_audio=VISUALIZE_AUDIO,
+                  reactivity=REACTIVITY)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
     if CONTROLLER == 'midi':
         controller = MIDIController(output_path, params)
         asyncio.create_task(controller.start_polling_loop())  # async MIDI polling
@@ -62,15 +63,17 @@ async def main():
         # viz.update(out)
         while True:
             if controller.cppn.needs_update:
-                # t_start = time.time()
+                t_start = time.time()
                 out = controller.cppn.update()
-                # t_forward = time.time()
+                t_forward = time.time()
                 viz.update(out)
-                # t_viz = time.time()
-                # time_forward = (t_forward - t_start)  * 1000
-                # time_viz = (t_viz - t_forward) * 1000
-                # print(f"Times: forward={time_forward:.2f}ms, viz={time_viz:.2f}ms")
-            await asyncio.sleep(0.00016)
+                t_viz = time.time()
+                time_forward = (t_forward - t_start)  * 1000
+                time_viz = (t_viz - t_forward) * 1000
+                print(f"Times: forward={time_forward:.2f}ms, viz={time_viz:.2f}ms")
+            elif viz.needs_update:
+                viz.update(out)
+            await asyncio.sleep(0.001)
 
     except KeyboardInterrupt:
         viz.cleanup()
