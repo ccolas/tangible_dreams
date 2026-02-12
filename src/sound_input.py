@@ -1,4 +1,6 @@
 import atexit
+import ctypes
+import multiprocessing as mp
 import numpy as np
 import sounddevice as sd
 
@@ -16,6 +18,148 @@ def _rms(x): return float(np.sqrt(np.mean(x*x) + EPS))
 def _db_amp(x): return 20.0 * np.log10(max(x, EPS))
 def _snr01(snr_db, snr_floor_db, snr_ceil_db): return float(np.clip(
     (snr_db - snr_floor_db) / (snr_ceil_db - snr_floor_db), 0.0, 1.0))
+
+# Shared buffer layout:  [0:3] audio_array, [3:6] band_db, [6:9] threshold_db,
+#                         [9:12] band_gain, [12] delay_seconds, [13:13+PS] last_ps
+_PS_SIZE = BLOCK_SIZE // 2 + 1   # rfft output length (513 for BLOCK_SIZE=1024)
+_SHARED_META = 13                # floats before the PS data
+_SHARED_SIZE = _SHARED_META + _PS_SIZE
+
+
+def _viz_process_main(shared_buf, freqs, bands, band_names, band_colors):
+    """Runs in a separate process — matplotlib has its own GIL here."""
+    import matplotlib
+    matplotlib.use('TkAgg')
+    import matplotlib.pyplot as plt
+    import matplotlib.animation as animation
+
+    MAX_HIST = 100
+    x_axis = np.arange(MAX_HIST)
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig.patch.set_facecolor('#1a1a1a')
+    for ax in axes.flat:
+        ax.set_facecolor('#2a2a2a')
+        ax.tick_params(colors='gray')
+
+    # ---- Top-left: Band Reactivity (0-1) ----
+    ax_bands = axes[0, 0]
+    ax_bands.set_title("Band Reactivity (0\u20131)", color='white', fontsize=10)
+    ax_bands.set_ylim(0, 1.05)
+    ax_bands.set_xlim(0, MAX_HIST)
+    bass_hist = [0.0] * MAX_HIST
+    mid_hist = [0.0] * MAX_HIST
+    treble_hist = [0.0] * MAX_HIST
+    (bass_line,) = ax_bands.plot([], [], color=band_colors[0], linewidth=2, label="bass")
+    (mid_line,) = ax_bands.plot([], [], color=band_colors[1], linewidth=2, label="mid")
+    (treble_line,) = ax_bands.plot([], [], color=band_colors[2], linewidth=2, label="treble")
+    ax_bands.legend(loc="upper right", fontsize=7, facecolor='#333', labelcolor='white')
+
+    # ---- Top-right: Per-band dB + Thresholds ----
+    ax_rms = axes[0, 1]
+    ax_rms.set_title("Band dB + Thresholds", color='white', fontsize=10)
+    ax_rms.set_ylabel("dB", color='gray')
+    ax_rms.set_ylim(-50, 10)
+    ax_rms.set_xlim(0, MAX_HIST)
+    bass_db_hist = [-60.0] * MAX_HIST
+    mid_db_hist = [-60.0] * MAX_HIST
+    treble_db_hist = [-60.0] * MAX_HIST
+    (line_bass_db,) = ax_rms.plot([], [], color=band_colors[0], linewidth=1.5, label="bass")
+    (line_mid_db,) = ax_rms.plot([], [], color=band_colors[1], linewidth=1.5, label="mid")
+    (line_treble_db,) = ax_rms.plot([], [], color=band_colors[2], linewidth=1.5, label="treble")
+    (thresh_bass_line,) = ax_rms.plot([], [], color=band_colors[0], linestyle="--", alpha=0.5)
+    (thresh_mid_line,) = ax_rms.plot([], [], color=band_colors[1], linestyle="--", alpha=0.5)
+    (thresh_treble_line,) = ax_rms.plot([], [], color=band_colors[2], linestyle="--", alpha=0.5)
+    ax_rms.legend(loc="upper right", fontsize=7, facecolor='#333', labelcolor='white')
+
+    # ---- Bottom-left: Spectrum ----
+    ax_spec = axes[1, 0]
+    ax_spec.set_title("Spectrum", color='white', fontsize=10)
+    ax_spec.set_ylim(-100, 20)
+    ax_spec.set_xlim(20, 8000)
+    ax_spec.set_xscale("log")
+    ax_spec.set_xlabel("Hz", color='gray')
+    (freq_line,) = ax_spec.plot([], [], color="white", linewidth=0.8)
+    (bass_split,) = ax_spec.plot([], [], color=band_colors[0], linestyle="--", alpha=0.6)
+    (mid_split,) = ax_spec.plot([], [], color=band_colors[1], linestyle="--", alpha=0.6)
+
+    # ---- Bottom-right: Gains + Delay ----
+    ax_ctrl = axes[1, 1]
+    ax_ctrl.set_title("Gains + Delay", color='white', fontsize=10)
+    ax_ctrl.set_xlim(-0.5, 3.5)
+    ax_ctrl.set_ylim(0, 9)
+    gain_bars = ax_ctrl.bar(range(3), [0]*3, color=band_colors, width=0.6)
+    delay_bar = ax_ctrl.bar([3], [0], color='#607D8B', width=0.6)
+    ax_ctrl.set_xticks(range(4))
+    ax_ctrl.set_xticklabels(band_names + ["delay"], fontsize=9, color='white')
+    gain_texts = [ax_ctrl.text(i, 0.1, "", ha='center', va='bottom',
+                               fontsize=10, color='white', fontweight='bold')
+                  for i in range(3)]
+    delay_text = ax_ctrl.text(3, 0.1, "", ha='center', va='bottom',
+                              fontsize=10, color='white', fontweight='bold')
+
+    hist_idx = [0]
+
+    def _update(frame):
+        # Read snapshot from shared memory (lock-free, atomic-enough for floats)
+        buf = np.frombuffer(shared_buf.get_obj(), dtype=np.float32)
+        vals = buf[0:3].copy()
+        band_db = {"bass": buf[3], "mid": buf[4], "treble": buf[5]}
+        thresholds = {"bass": buf[6], "mid": buf[7], "treble": buf[8]}
+        gains = [buf[9], buf[10], buf[11]]
+        delay_s = buf[12]
+        ps = buf[_SHARED_META:_SHARED_META + _PS_SIZE].copy()
+
+        idx = hist_idx[0]
+        bass_db_hist[idx] = band_db['bass']
+        mid_db_hist[idx] = band_db['mid']
+        treble_db_hist[idx] = band_db['treble']
+        bass_hist[idx] = float(vals[0])
+        mid_hist[idx] = float(vals[1])
+        treble_hist[idx] = float(vals[2])
+        hist_idx[0] = (idx + 1) % MAX_HIST
+
+        # Band reactivity
+        bass_line.set_data(x_axis, bass_hist)
+        mid_line.set_data(x_axis, mid_hist)
+        treble_line.set_data(x_axis, treble_hist)
+
+        # Per-band dB + thresholds
+        line_bass_db.set_data(x_axis, bass_db_hist)
+        line_mid_db.set_data(x_axis, mid_db_hist)
+        line_treble_db.set_data(x_axis, treble_db_hist)
+        thresh_bass_line.set_data(x_axis, [thresholds['bass']] * MAX_HIST)
+        thresh_mid_line.set_data(x_axis, [thresholds['mid']] * MAX_HIST)
+        thresh_treble_line.set_data(x_axis, [thresholds['treble']] * MAX_HIST)
+
+        all_db = [v for h in (bass_db_hist, mid_db_hist, treble_db_hist) for v in h if v > -200]
+        all_thresh = list(thresholds.values())
+        if all_db:
+            lo = min(min(all_db), min(all_thresh)) - 5
+            hi = max(max(all_db), max(all_thresh)) + 5
+            ax_rms.set_ylim(lo, hi)
+
+        # Gain bars + delay bar
+        for bar, g, txt in zip(gain_bars, gains, gain_texts):
+            bar.set_height(g)
+            txt.set_text(f"{g:.1f}")
+            txt.set_y(g + 0.15)
+        d_ms = delay_s * 1000
+        d_h = min(d_ms / 150.0 * 9.0, 8.5)
+        delay_bar[0].set_height(d_h)
+        delay_text.set_text(f"{d_ms:.0f}ms")
+        delay_text.set_y(d_h + 0.15)
+
+        # Spectrum
+        if np.any(ps > 0):
+            freq_line.set_data(freqs, 10 * np.log10(ps + EPS))
+            bass_split.set_data([bands['bass'][1]]*2, [-100, 20])
+            mid_split.set_data([bands['mid'][1]]*2, [-100, 20])
+
+    fig.tight_layout()
+    ani = animation.FuncAnimation(fig, _update, interval=30,
+                                  blit=False, cache_frame_data=False)
+    plt.show()
 
 
 class AudioGate:
@@ -91,7 +235,9 @@ class AudioGate:
         self.update_with_bands()
         atexit.register(self.stop)
 
-        self._viz_thread = None
+        # Shared memory for visualization process
+        self._shared_buf = mp.Array(ctypes.c_float, _SHARED_SIZE)
+        self._viz_proc = None
         if self.visualize:
             self._start_visualization()
 
@@ -208,146 +354,34 @@ class AudioGate:
 
         self.audio_array = np.array(arr, dtype=np.float32)
 
+        # Write to shared memory for viz process (no lock needed — single writer)
+        if self._viz_proc is not None:
+            buf = np.frombuffer(self._shared_buf.get_obj(), dtype=np.float32)
+            buf[0:3] = self.audio_array[:3]
+            buf[3] = self.last_band_db['bass']
+            buf[4] = self.last_band_db['mid']
+            buf[5] = self.last_band_db['treble']
+            buf[6] = self.threshold_db['bass']
+            buf[7] = self.threshold_db['mid']
+            buf[8] = self.threshold_db['treble']
+            buf[9] = self.band_gain['bass']
+            buf[10] = self.band_gain['mid']
+            buf[11] = self.band_gain['treble']
+            buf[12] = self.delay_seconds
+            if self.last_ps is not None:
+                buf[_SHARED_META:_SHARED_META + len(self.last_ps)] = self.last_ps.astype(np.float32)
+
     # ------------------------------------------------------------------ viz
     def _start_visualization(self):
-        import threading
-        self._viz_thread = threading.Thread(target=self._viz_loop, daemon=True)
-        self._viz_thread.start()
-
-    def _viz_loop(self):
-        import matplotlib
-        matplotlib.use('TkAgg')
-        import matplotlib.pyplot as plt
-        import matplotlib.animation as animation
-
-        MAX_HIST = 100
-        x_axis = np.arange(MAX_HIST)
         band_names = ["bass", "mid", "treble"]
         band_colors = ["#2196F3", "#4CAF50", "#F44336"]
-
-        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-        fig.patch.set_facecolor('#1a1a1a')
-        for ax in axes.flat:
-            ax.set_facecolor('#2a2a2a')
-            ax.tick_params(colors='gray')
-
-        # ---- Top-left: Band Reactivity (0-1) ----
-        ax_bands = axes[0, 0]
-        ax_bands.set_title("Band Reactivity (0\u20131)", color='white', fontsize=10)
-        ax_bands.set_ylim(0, 1.05)
-        ax_bands.set_xlim(0, MAX_HIST)
-
-        bass_hist = [0.0] * MAX_HIST
-        mid_hist = [0.0] * MAX_HIST
-        treble_hist = [0.0] * MAX_HIST
-        (bass_line,) = ax_bands.plot([], [], color=band_colors[0], linewidth=2, label="bass")
-        (mid_line,) = ax_bands.plot([], [], color=band_colors[1], linewidth=2, label="mid")
-        (treble_line,) = ax_bands.plot([], [], color=band_colors[2], linewidth=2, label="treble")
-        ax_bands.legend(loc="upper right", fontsize=7, facecolor='#333', labelcolor='white')
-
-        # ---- Top-right: Per-band dB + Thresholds ----
-        ax_rms = axes[0, 1]
-        ax_rms.set_title("Band dB + Thresholds", color='white', fontsize=10)
-        ax_rms.set_ylabel("dB", color='gray')
-        ax_rms.set_ylim(-50, 10)
-        ax_rms.set_xlim(0, MAX_HIST)
-
-        bass_db_hist = [-60.0] * MAX_HIST
-        mid_db_hist = [-60.0] * MAX_HIST
-        treble_db_hist = [-60.0] * MAX_HIST
-        (line_bass_db,) = ax_rms.plot([], [], color=band_colors[0], linewidth=1.5, label="bass")
-        (line_mid_db,) = ax_rms.plot([], [], color=band_colors[1], linewidth=1.5, label="mid")
-        (line_treble_db,) = ax_rms.plot([], [], color=band_colors[2], linewidth=1.5, label="treble")
-        (thresh_bass_line,) = ax_rms.plot([], [], color=band_colors[0], linestyle="--", alpha=0.5)
-        (thresh_mid_line,) = ax_rms.plot([], [], color=band_colors[1], linestyle="--", alpha=0.5)
-        (thresh_treble_line,) = ax_rms.plot([], [], color=band_colors[2], linestyle="--", alpha=0.5)
-        ax_rms.legend(loc="upper right", fontsize=7, facecolor='#333', labelcolor='white')
-
-        # ---- Bottom-left: Spectrum ----
-        ax_spec = axes[1, 0]
-        ax_spec.set_title("Spectrum", color='white', fontsize=10)
-        ax_spec.set_ylim(-100, 20)
-        ax_spec.set_xlim(20, 8000)
-        ax_spec.set_xscale("log")
-        ax_spec.set_xlabel("Hz", color='gray')
-        (freq_line,) = ax_spec.plot([], [], color="white", linewidth=0.8)
-        (bass_split,) = ax_spec.plot([], [], color=band_colors[0], linestyle="--", alpha=0.6)
-        (mid_split,) = ax_spec.plot([], [], color=band_colors[1], linestyle="--", alpha=0.6)
-
-        # ---- Bottom-right: Gains + Delay ----
-        ax_ctrl = axes[1, 1]
-        ax_ctrl.set_title("Gains + Delay", color='white', fontsize=10)
-        ax_ctrl.set_xlim(-0.5, 3.5)
-        ax_ctrl.set_ylim(0, 9)
-        gain_bars = ax_ctrl.bar(range(3), [0]*3, color=band_colors, width=0.6)
-        delay_bar = ax_ctrl.bar([3], [0], color='#607D8B', width=0.6)
-        ax_ctrl.set_xticks(range(4))
-        ax_ctrl.set_xticklabels(band_names + ["delay"], fontsize=9, color='white')
-        gain_texts = [ax_ctrl.text(i, 0.1, "", ha='center', va='bottom',
-                                   fontsize=10, color='white', fontweight='bold')
-                      for i in range(3)]
-        delay_text = ax_ctrl.text(3, 0.1, "", ha='center', va='bottom',
-                                  fontsize=10, color='white', fontweight='bold')
-
-        hist_idx = [0]
-
-        def _update(frame):
-            vals = self.audio_array.copy()
-            band_db = self.last_band_db
-            gains = [self.band_gain[k] for k in band_names]
-            thresholds = self.threshold_db
-
-            idx = hist_idx[0]
-            bass_db_hist[idx] = band_db['bass']
-            mid_db_hist[idx] = band_db['mid']
-            treble_db_hist[idx] = band_db['treble']
-            bass_hist[idx] = float(vals[0]) if len(vals) > 0 else 0.0
-            mid_hist[idx] = float(vals[1]) if len(vals) > 1 else 0.0
-            treble_hist[idx] = float(vals[2]) if len(vals) > 2 else 0.0
-            hist_idx[0] = (idx + 1) % MAX_HIST
-
-            # Band reactivity lines
-            bass_line.set_data(x_axis, bass_hist)
-            mid_line.set_data(x_axis, mid_hist)
-            treble_line.set_data(x_axis, treble_hist)
-
-            # Per-band dB + thresholds
-            line_bass_db.set_data(x_axis, bass_db_hist)
-            line_mid_db.set_data(x_axis, mid_db_hist)
-            line_treble_db.set_data(x_axis, treble_db_hist)
-            thresh_bass_line.set_data(x_axis, [thresholds['bass']] * MAX_HIST)
-            thresh_mid_line.set_data(x_axis, [thresholds['mid']] * MAX_HIST)
-            thresh_treble_line.set_data(x_axis, [thresholds['treble']] * MAX_HIST)
-
-            all_db = [v for h in (bass_db_hist, mid_db_hist, treble_db_hist) for v in h if v > -200]
-            all_thresh = list(thresholds.values())
-            if all_db:
-                lo = min(min(all_db), min(all_thresh)) - 5
-                hi = max(max(all_db), max(all_thresh)) + 5
-                ax_rms.set_ylim(lo, hi)
-
-            # Gain bars + delay bar
-            for bar, g, txt in zip(gain_bars, gains, gain_texts):
-                bar.set_height(g)
-                txt.set_text(f"{g:.1f}")
-                txt.set_y(g + 0.15)
-            d_ms = self.delay_seconds * 1000
-            d_h = min(d_ms / 150.0 * 9.0, 8.5)
-            delay_bar[0].set_height(d_h)
-            delay_text.set_text(f"{d_ms:.0f}ms")
-            delay_text.set_y(d_h + 0.15)
-
-            # Spectrum
-            ps = self.last_ps
-            if ps is not None:
-                freq_line.set_data(self.freqs, 10 * np.log10(ps + EPS))
-                bass_split.set_data([self.bands['bass'][1]]*2, [-100, 20])
-                mid_split.set_data([self.bands['mid'][1]]*2, [-100, 20])
-
-        fig.tight_layout()
-        ani = animation.FuncAnimation(fig, _update, interval=30,
-                                      blit=False, cache_frame_data=False)
-        plt.show()
+        self._viz_proc = mp.Process(
+            target=_viz_process_main,
+            args=(self._shared_buf, self.freqs.copy(), dict(self.bands),
+                  band_names, band_colors),
+            daemon=True,
+        )
+        self._viz_proc.start()
 
     # ------------------------------------------------------------------ start/stop
     def start(self):
@@ -368,6 +402,9 @@ class AudioGate:
             self.stream.stop()
             self.stream.close()
             self.stream = None
+        if self._viz_proc and self._viz_proc.is_alive():
+            self._viz_proc.terminate()
+            self._viz_proc = None
 
 
 if __name__ == '__main__':

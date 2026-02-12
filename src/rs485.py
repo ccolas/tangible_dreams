@@ -121,21 +121,17 @@ class RS485Controller:
         self.ser = self._open_serial()
         self.ser.inter_byte_timeout = 0
         await asyncio.sleep(0.1)
+        loop = asyncio.get_event_loop()
         while True:
-            t_init = time.time()
             if self.viz:
                 self.viz.poll_events()
-            changes, i_attempts = self.poll_nodes(self.ser)
-            t_poll = time.time()
+            # Run blocking serial I/O in a thread so it doesn't block the event loop
+            changes, i_attempts = await loop.run_in_executor(None, self.poll_nodes, self.ser)
             self.handle_update(changes)
-            t_update = time.time()
             if len(changes) > 0:
                 self.last_change_time = time.time()
                 if not self.parsed_once: self.parsed_once = True
-                time_poll = (t_poll - t_init) * 1000
-                time_update = (t_update - t_poll) * 1000
-                # print(f'control time: poll={time_poll:.2f}ms, update={time_update:.2f}')
-            await asyncio.sleep(0.00016)
+            await asyncio.sleep(0.0001)
 
     def start(self):
         self.ser = self._open_serial()
@@ -552,22 +548,6 @@ class RS485Controller:
 
         if len(changes) > 0:
             self.cppn.needs_update = True
-
-        # Time-based evolutions and audio reactivity
-        if "time" in self.cppn.reactivity or "audio" in self.cppn.reactivity:
-            for node_idx in range(self.cppn.n_inputs, self.cppn.n_nodes):
-                if self.cppn.device_state['cv_override'][node_idx]:
-                    weight1 = self.cppn.weights_1_raw[node_idx]  # gain on modulation
-                    # update weight of second input
-                    weight2 = self.cppn.reactive_update(node_idx, weight1)  # get time-based or audio-based amplified weight
-                    if weight2 is not None:
-                        weight2 = jnp.asarray(weight2, dtype=jnp.float16)
-                        # find node connected in input 2
-                        source2_idx = self.cppn.inputs_nodes_record[node_idx, 1]
-                        if source2_idx >= 0:
-                            self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[source2_idx, node_idx].set(weight2)
-                            # print(f'  cv controls weight 2: {weight2}')
-                        self.cppn.needs_update = True
 
 
 if __name__ == '__main__':
