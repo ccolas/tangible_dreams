@@ -182,6 +182,7 @@ class CPPN:
 
         key = self._inputs_key(res)
         if (self._x_in is None) or (key != self._x_in_key):
+            print(f"  [CPPN] recomputing inputs (cache miss)")
             self._x_in = self._compute_inputs(self.device_state, coords_x, coords_y)  # (N, n_in)
             self._x_in_key = key
 
