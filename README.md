@@ -1,8 +1,8 @@
-# Tangible CPPN
+# Tangible Dreams
 
 Real-time generative visuals driven by a [Compositional Pattern-Producing Network](https://en.wikipedia.org/wiki/Compositional_pattern-producing_network) (CPPN). The network takes pixel coordinates as input and outputs RGB colors, producing abstract organic patterns that can be shaped in real time via physical controls, MIDI, or audio.
 
-Built for the **Tangible Dreams** installation — visitors sculpt abstract patterns by turning knobs on a custom hardware panel.
+Built for the **[Tangible Dreams](https://cedriccolas.com/project/tangible-dreams)** installation — visitors sculpt abstract patterns by turning knobs on a custom hardware panel.
 
 ## How it works
 
