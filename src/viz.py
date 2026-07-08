@@ -66,6 +66,28 @@ class ModernGLBackend:
                 return
         print("[MIDI] No MIDI device found")
 
+    @staticmethod
+    def _describe_control(control, is_flux):
+        """Human-readable label for a MIDI CC number, for mapping physical controls by touch."""
+        shared = {
+            0: 'grain strength', 1: 'displace strength',
+            5: 'bass/low gain', 6: 'mid gain', 7: 'treble/high gain',
+            18: 'bass low cutoff', 19: 'bass/mid crossover', 20: 'mid/treble crossover',
+            21: 'bass gate %', 22: 'mid gate %', 23: 'treble gate %',
+            41: 'restart application', 45: 'save state + git push',
+            46: 'cycle symmetry mode', 60: 'toggle color inversion',
+        }
+        if control in shared:
+            return shared[control]
+        if is_flux:
+            flux = {2: 'audio delay', 3: 'attack speed', 4: 'release speed',
+                    17: 'flux decay', 66: 'set delay to measured'}
+            return flux.get(control, 'unmapped')
+        else:
+            simple = {2: 'attack speed', 3: 'release speed', 4: 'audio delay',
+                      68: 'set delay to measured'}
+            return simple.get(control, 'unmapped')
+
 
     def initialize(self, cppn, screen_loc, width: int, height: int, window_scale: float):
         self.cppn = cppn
@@ -267,6 +289,10 @@ class ModernGLBackend:
 
                 data, _ts = msg
                 status, control, value = data[0:3]
+
+                is_flux = self.cppn.audio is not None and getattr(self.cppn.audio, 'mode', 'simple') == 'flux'
+                print(f"[MIDI] CC {control} = {value} -> {self._describe_control(control, is_flux)}")
+
                 # Restart
                 if control == 41 and value == 127:
                     os.execv(sys.executable, ['python'] + sys.argv)

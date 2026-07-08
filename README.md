@@ -52,7 +52,24 @@ Set `REACTIVITY` in `src/app.py`:
 | `"audio"` | 3 time nodes + 6 audio-driven nodes (EMA/flux). **Recommended.** |
 | `"cv"` | 3 time nodes + CV-driven nodes via RS485 hardware. |
 
-In all modes, **time nodes (5, 6, 13) and output nodes (14-16) are always active** with distinct time-based dynamics (sine, Perlin, beating frequencies, etc.).
+In all modes, **the top-row nodes (6, 11, 14) and output nodes (15-17) are always active** with distinct time-based dynamics (perlin, sine, beating frequencies).
+
+## Hardware node layout
+
+The 17 physical nodes are arranged on the panel in 5 columns (top to bottom):
+
+```
+        col1  col2  col3  col4  col5
+row1  [  5  ][  6  ][ 11  ][ 14  ][ 16  ]
+row2  [  4  ][  7  ][ 10  ][ 12  ][ 17  ]
+row3  [  3  ][  8  ][  9  ][ 13  ][ 15  ]
+row4  [  2  ][  1  ][     ][     ][     ]
+```
+
+- Inputs (1-5) span col1 (5,4,3,2 top to bottom) plus node 1 at the bottom of col2.
+- Hidden nodes (6-14) fill the top 3 rows of col2-col4.
+- Outputs (15-17) fill the top 3 rows of col5.
+- Top row (6, 11, 14) is always time-driven, regardless of reactivity mode.
 
 ## Audio modes
 
@@ -60,23 +77,25 @@ Set `AUDIO_MODE` in `src/app.py`:
 
 | Mode | Signals | Viz | Description |
 |------|---------|-----|-------------|
-| `"simple"` | 3 (bass/mid/treble EMA) | 2x2 | Each band has 2 nodes sharing the same EMA signal. |
+| `"simple"` | 3 (low/mid/high EMA) | 2x2 | Each band has 2 nodes sharing the same EMA signal. |
 | `"flux"` | 6 (3 EMA + 3 flux) | 2x3 | Separate EMA (sustained) and flux (transient) per band. |
 
 ### Node-to-signal mapping
 
-| Node (idx) | Time | Audio simple | Audio flux |
+| Node | Time (fallback) | Audio simple | Audio flux |
 |---|---|---|---|
-| 5 (0) | sine + harmonics | sine + harmonics | sine + harmonics |
-| 6 (1) | Perlin-modulated sine | Perlin-modulated sine | Perlin-modulated sine |
-| 7 (2) | slow triangle | bass EMA | bass EMA |
-| 8 (3) | slow sine | mid EMA | mid EMA |
-| 9 (4) | soft square | bass EMA | bass flux |
-| 10 (5) | beating freqs | treble EMA | treble flux |
-| 11 (6) | Perlin drift | treble EMA | treble EMA |
-| 12 (7) | stepped Perlin | mid EMA | mid flux |
-| 13 (8) | Perlin + envelope | Perlin + envelope | Perlin + envelope |
-| 14-16 (out) | sine | sine | sine |
+| 6 | perlin drift | perlin drift (always) | perlin drift (always) |
+| 7 | Perlin-modulated sine | low EMA | low EMA |
+| 8 | slow triangle | low EMA | low flux |
+| 9 | phase-shifted sine | mid EMA | mid EMA |
+| 10 | soft square | mid EMA | mid flux |
+| 11 | plain sine | sine (always) | sine (always) |
+| 12 | sine + harmonics | high EMA | high EMA |
+| 13 | stepped Perlin | high EMA | high flux |
+| 14 | beating freqs | beating freqs (always) | beating freqs (always) |
+| 15-17 (out) | sine | sine | sine |
+
+Nodes 6, 11, 14 (top row) are **always** perlin / sine / beating, in every reactivity mode. Nodes 7-10 and 12-13 drive low/mid/high in `"audio"` mode, and fall back to their own distinct time schedule in `"time"` mode.
 
 See [docs/audio_reactivity.md](docs/audio_reactivity.md) for audio setup, MIDI controls, and PulseAudio routing.
 

@@ -240,7 +240,10 @@ class RS485Controller:
                     value = data[index]; index += 1
                 else:
                     return None, None
-                if command != 0x02 or pin < 3:
+                # On a periodic 0x02 resync, only re-report connection-selector pins (0-2);
+                # digital switches (8: on/off, 9: cv/reactivity) must never be dropped, or a
+                # click landing on a resync cycle silently fails to toggle.
+                if command != 0x02 or pin < 3 or pin in (8, 9):
                     parsed[pin] = value
             return node_id, parsed
         return None, None
@@ -269,7 +272,7 @@ class RS485Controller:
                 # sensor 3 (optional) is a switch on input function (source nodes)
                 # digital 9 (optional) is an "invert" on Cartesian coordinates (X, Y nodes)
                 # sensor 6-7 are zoom and shift (or two mods)
-                # digital 8 is on/off switch
+                # digital 8 is a switch: on = shift (sensor 7) is sine-driven, off = shift stays manual
                 for sensor_id, sensor_value in node_data.items():
                     if sensor_id == 3:
                         input_function_id = sensor_value + 2
@@ -290,9 +293,15 @@ class RS485Controller:
                         self.cppn.device_state['inverted_inputs'] = self.cppn.device_state['inverted_inputs'].at[node_idx].set(bool(sensor_value))
 
                     elif sensor_id == 8:
-                        print(f'  active: {sensor_value}')
-                        self.cppn.device_state['node_active'] = self.cppn.device_state['node_active'].at[node_idx].set(bool(sensor_value))
-                        graph_changed = True
+                        cv_on = bool(sensor_value)
+                        already_on = bool(self.cppn.device_state['cv_override'][node_idx])
+                        if cv_on and not already_on:
+                            print(f'  node {node_id} ({self.cppn.node_signal_name(node_idx)}) reactivity ON')
+                            self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(True)
+                        elif not cv_on and already_on:
+                            print(f'  node {node_id} ({self.cppn.node_signal_name(node_idx)}) reactivity OFF')
+                            self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(False)
+                            self.cppn.device_state['input_shift_mods'] = self.cppn.device_state['input_shift_mods'].at[node_idx].set(0.0)
                     # else:
                     #     raise ValueError(f'Unexepceted sensor {sensor_id} on node {node_id}')
 
@@ -316,11 +325,11 @@ class RS485Controller:
                 # CV override first
                 cv_override_update = node_data.get(9, None)
                 if cv_override_update == 1 and not self.cppn.device_state['cv_override'][node_idx]:
-                    print(f'  switching cv override ON for node {node_id}')
+                    print(f'  node {node_id} ({self.cppn.node_signal_name(node_idx)}) reactivity ON')
                     self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(True)
 
                 elif cv_override_update == 0 and self.cppn.device_state['cv_override'][node_idx]:
-                    print(f'  switching cv override OFF for node {node_id}')
+                    print(f'  node {node_id} ({self.cppn.node_signal_name(node_idx)}) reactivity OFF')
                     self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(False)
                     self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
 
@@ -443,11 +452,11 @@ class RS485Controller:
                 # CV override first
                 cv_override_update = node_data.get(9, None)
                 if cv_override_update == 1 and not self.cppn.device_state['cv_override'][node_idx]:
-                    print(f'  switching cv override ON for node {node_id}')
+                    print(f'  node {node_id} ({self.cppn.node_signal_name(node_idx)}) reactivity ON')
                     self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(True)
 
                 elif cv_override_update == 0 and self.cppn.device_state['cv_override'][node_idx]:
-                    print(f'  switching cv override OFF for node {node_id}')
+                    print(f'  node {node_id} ({self.cppn.node_signal_name(node_idx)}) reactivity OFF')
                     self.cppn.device_state['cv_override'] = self.cppn.device_state['cv_override'].at[node_idx].set(False)
                     self.cppn.device_state['weight_mods'] = self.cppn.device_state['weight_mods'].at[:, node_idx].set(0)
 

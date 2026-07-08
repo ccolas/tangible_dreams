@@ -120,10 +120,44 @@ class CPPN:
             'output_slopes': jnp.ones(self.n_outputs, dtype=jnp.float32),
             'output_slope_mods': jnp.zeros(self.n_outputs, dtype=jnp.float32),
             'cv_override': jnp.zeros(self.n_nodes, dtype=jnp.bool_),
+            'input_shift_mods': jnp.zeros(self.n_inputs, dtype=jnp.float32),
         }
         state['input_function_ids'] = state['input_function_ids'].at[self.x_id].set(0)
         state['input_function_ids'] = state['input_function_ids'].at[self.y_id].set(1)
         return state
+
+    # idx (0-based, relative to first hidden node) -> human-readable signal label
+    NODE_SIGNAL_LABELS = {
+        0: "perlin", 1: "low", 2: "low", 3: "mid", 4: "mid",
+        5: "sine", 6: "high", 7: "high", 8: "beating",
+    }
+
+    def node_signal_name(self, node_idx):
+        """Human-readable label for what drives this node's reactive signal (time/audio/shift)."""
+        if node_idx < self.n_inputs:
+            return "sine-shift"
+        if node_idx in self.output_ids:
+            return "sine"
+        idx = node_idx - self.n_inputs
+        label = self.NODE_SIGNAL_LABELS.get(idx, "unknown")
+        if label in ("low", "mid", "high") and "audio" in self.reactivity and self.audio is not None and self.audio.mode == "flux":
+            label += " (EMA)" if idx in (1, 3, 6) else " (flux)"
+        return label
+
+    def input_reactive_update(self, node_idx):
+        """Sine-driven absolute value (raw pot units, [0, 1023]) that REPLACES the manual shift
+        (input_params2) for an input node while its switch is toggled on. Off leaves the shift
+        fully manual (this value is unused).
+
+        x/y nodes sweep only the central half of the range (so pattern stays roughly on-screen);
+        all other inputs sweep the full [0, 1023] range.
+        """
+        period = 12.0
+        omega = 2 * np.pi / period
+        center = 1023 / 2
+        full_amplitude = 1023 / 2
+        amplitude = full_amplitude * 0.5 if node_idx in (self.x_id, self.y_id) else full_amplitude
+        return center + amplitude * np.sin(omega * self.time + node_idx)
 
     def reactive_update(self, i, w):
         """
@@ -133,11 +167,11 @@ class CPPN:
 
         Modes:
           "time"  — all nodes time-controlled
-          "audio" — idx 0,1,8 + outputs = time;
-                    EMA: idx 2→bass, 3→mid, 6→treble
-                    Flux: idx 4→bass, 7→mid, 5→treble
-          "cv"    — idx 0,1,8 + outputs = time; cv nodes driven by RS485 hardware
-        Time nodes (idx 0,1,8) and outputs are ALWAYS active.
+          "audio" — idx 0,5,8 + outputs = time;
+                    EMA: idx 1→low, 3→mid, 6→high
+                    Flux: idx 2→low, 4→mid, 7→high
+          "cv"    — idx 0,5,8 + outputs = time; cv nodes driven by RS485 hardware
+        Time nodes (idx 0,5,8 — the top row on the hardware) and outputs are ALWAYS active.
         """
         w /= 1023
         now = self.time
@@ -156,18 +190,19 @@ class CPPN:
         idx = i - self.n_inputs  # 0..8
 
         # === Audio nodes — only in "audio" mode ===
-        # EMA: idx 2→bass, 3→mid, 6→treble  |  Flux: idx 4→bass, 7→mid, 5→treble
-        if idx in (2, 3, 4, 5, 6, 7) and "audio" in self.reactivity:
+        # EMA: idx 1→low, 3→mid, 6→high  |  Flux: idx 2→low, 4→mid, 7→high
+        if idx in (1, 2, 3, 4, 6, 7) and "audio" in self.reactivity:
             if self.audio.mode == "flux":
-                audio_idx = {2: 0, 3: 1, 6: 2, 4: 3, 7: 4, 5: 5}[idx]
+                audio_idx = {1: 0, 3: 1, 6: 2, 2: 3, 4: 4, 7: 5}[idx]
             else:
-                audio_idx = {2: 0, 4: 0, 3: 1, 7: 1, 6: 2, 5: 2}[idx]
+                audio_idx = {1: 0, 2: 0, 3: 1, 4: 1, 6: 2, 7: 2}[idx]
             audio_val = float(self.audio.audio_array[audio_idx])
             return A * (audio_val * 2 - 1)
 
         # === Time dynamics — each node has a distinct schedule ===
-        if idx == 0:    # sine + harmonics
-            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
+        if idx == 0:    # Perlin drift (top row — always time)
+            t = now * 0.2 + 60.0
+            return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
         elif idx == 1:  # Perlin-modulated sine
             drift = 0.3 * noise.noise1(now * 0.05, octaves=2)
             return A * np.sin((omega * (1 + drift)) * now)
@@ -179,19 +214,16 @@ class CPPN:
             return A * np.sin(omega * 0.7 * now + 2.1)
         elif idx == 4:  # soft square (tanh of fast sine)
             return A * np.tanh(3.0 * np.sin(omega * 1.3 * now + 0.7))
-        elif idx == 5:  # two beating frequencies
-            return A * 0.5 * (np.sin(omega * now) + np.sin(omega * 1.07 * now))
-        elif idx == 6:  # Perlin drift
-            t = now * 0.2 + 60.0
-            return A * (2 * noise.noise1(t, octaves=3, persistence=0.2, lacunarity=2.0) - 1.0)
+        elif idx == 5:  # plain sine (top row — always time)
+            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
+        elif idx == 6:  # sine + harmonics
+            return w * (np.sin(omega * now) + 0.15 * np.sin(omega * 7 * now))
         elif idx == 7:  # stepped Perlin (quantized)
             t = now * 0.15 + 70.0
             raw = noise.noise1(t, octaves=2)
             return A * (round(raw * 4) / 4) * 2
-        elif idx == 8:  # fast Perlin + slow sine envelope
-            envelope = 0.5 + 0.5 * np.sin(omega * 0.2 * now)
-            t = now * 0.8 + 80.0
-            return A * envelope * (2 * noise.noise1(t, octaves=2) - 1.0)
+        elif idx == 8:  # two beating frequencies (top row — always time)
+            return A * 0.5 * (np.sin(omega * now) + np.sin(omega * 1.07 * now))
 
         return 0.0
 
@@ -236,10 +268,15 @@ class CPPN:
         @jit
         def _compute_inputs(state, coords_x, coords_y):
             # Build (N, n_in) once per input-param change
+            def effective_p2(i):
+                # sine-driven value REPLACES the manual shift while cv_override is on for input i
+                manual = state['input_params2'][i].astype(jnp.float32)
+                return lax.select(state['cv_override'][i], state['input_shift_mods'][i], manual)
+
             gz_x = zoom_mapping(state['input_params1'][self.x_id])
             gz_y = zoom_mapping(state['input_params1'][self.y_id])
-            gb_x = bias_mapping(state['input_params2'][self.x_id])
-            gb_y = bias_mapping(state['input_params2'][self.y_id])
+            gb_x = bias_mapping(effective_p2(self.x_id))
+            gb_y = bias_mapping(effective_p2(self.y_id))
 
             x = coords_x
             y = coords_y
@@ -248,7 +285,7 @@ class CPPN:
 
             def one_input(i):
                 p1 = state['input_params1'][i]
-                p2 = state['input_params2'][i]
+                p2 = effective_p2(i)
                 f_id = state['input_function_ids'][i]
                 inv = (state['inverted_inputs'][i] > 0)
 
@@ -534,12 +571,14 @@ class CPPN:
         inv = np.array(self.device_state['inverted_inputs'])
         act = np.array(self.device_state['node_active'][:self.n_inputs])
         fids = np.array(self.device_state['input_function_ids'][:self.n_inputs])
+        shift_mods = np.array(self.device_state['input_shift_mods']).round(2)
         return (
             tuple(p1.tolist()),
             tuple(p2.tolist()),
             tuple(inv.tolist()),
             tuple(act.tolist()),
             tuple(fids.tolist()),
+            tuple(shift_mods.tolist()),
             res,  # 👈 add resolution to invalidate cache properly
         )
 
@@ -558,6 +597,8 @@ class CPPN:
                 state = pickle.load(f)
         self.viz_params = state.pop('viz_params', None)
         self.device_state = {k: jnp.array(v) for k, v in state.items()}
+        if 'input_shift_mods' not in self.device_state:  # back-compat with states saved before this field existed
+            self.device_state['input_shift_mods'] = jnp.zeros(self.n_inputs, dtype=jnp.float32)
 
     @property
     def time(self):

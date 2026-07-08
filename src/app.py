@@ -11,7 +11,7 @@ from src.viz import create_backend
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
-exp_id = "tests"
+exp_id = "jul_6"
 output_path = repo_path + f'outputs/{exp_id}/'
 os.makedirs(output_path, exist_ok=True)
 
@@ -24,8 +24,6 @@ os.makedirs(output_path, exist_ok=True)
 #  select carefully activation functions
 #  optimize for speed with claude
 #  add button to save as elites, then mutate these when sampling new network!
-
-
 
 DEBUG = True
 RES = 1024
@@ -57,6 +55,19 @@ def update_reactivity(cppn):
                 changed = True
     if changed:
         cppn.device_state['weight_mods'] = jnp.array(weight_mods, dtype=jnp.float16)
+        cppn.needs_update = True
+
+    # Input nodes: sine-driven shift replaces the manual value while their switch is on
+    input_shift_mods = np.array(cppn.device_state['input_shift_mods'])
+    input_changed = False
+    for node_idx in range(cppn.n_inputs):
+        if cv_override[node_idx]:
+            new_val = cppn.input_reactive_update(node_idx)
+            if new_val != input_shift_mods[node_idx]:
+                input_shift_mods[node_idx] = new_val
+                input_changed = True
+    if input_changed:
+        cppn.device_state['input_shift_mods'] = jnp.array(input_shift_mods, dtype=jnp.float32)
         cppn.needs_update = True
 
 async def main():
@@ -103,7 +114,7 @@ async def main():
                 viz.measured_delay = sum(frame_times) / len(frame_times)
                 fps = 1.0 / dt if dt > 0 else 0
                 delay_ms = (controller.cppn.audio.delay_seconds * 1000) if controller.cppn.audio else 0
-                print(f"react={time_react:.1f}ms fwd={time_forward:.1f}ms viz={time_viz:.1f}ms fps={fps:.0f} delay={delay_ms:.0f}ms")
+                # print(f"react={time_react:.1f}ms fwd={time_forward:.1f}ms viz={time_viz:.1f}ms fps={fps:.0f} delay={delay_ms:.0f}ms")
             elif viz.needs_update:
                 viz.update(out)
             await asyncio.sleep(0.001)
