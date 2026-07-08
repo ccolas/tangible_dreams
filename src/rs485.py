@@ -412,7 +412,7 @@ class RS485Controller:
                             self.cppn.weights_1_raw[node_idx] = sensor_value
                     elif sensor_id == 7:
                         activ_id = sensor_value
-                        if 0 <= activ_id < len(self.cppn.device_state['activation_ids']):
+                        if 0 <= activ_id < len(self.cppn.activations):
                             self.cppn.device_state['activation_ids'] = self.cppn.device_state['activation_ids'].at[middle_idx].set(activ_id)
                             print(f'  updating activation to {self.cppn.activations_names[activ_id]}')
                     elif sensor_id == 6:

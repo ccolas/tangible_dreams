@@ -149,6 +149,7 @@ Two layouts depending on `AUDIO_MODE`:
 | 45 | Save state + git push |
 | 46 | Cycle symmetry mode |
 | 60 | Toggle color inversion |
+| 59 | Toggle video recording (start/stop, same button) |
 | 66 | Set delay to measured render time (flux mode) |
 | 68 | Set delay to measured render time (simple mode) |
 
@@ -166,6 +167,16 @@ Press Save (MIDI CC 45) or `S` on the keyboard. This saves:
 - `outputs/{exp_id}/image_YYYY_MM_DD_HHMMSS.png` — rendered image
 - `outputs/{exp_id}/state_YYYY_MM_DD_HHMMSS.pkl` — full network state (loadable)
 - Commits and pushes to git
+
+## Video recording
+
+Press MIDI CC 64 to start recording, press it again to stop. Saves
+`outputs/{exp_id}/video_YYYY_MM_DD_HHMMSS.mp4` — same resolution as the live render (no upscaling),
+including the live grain/displacement/symmetry/invert post-processing, plus audio captured from the
+`visual_sink.monitor` PulseAudio source (see [docs/audio_reactivity.md](docs/audio_reactivity.md)).
+
+Encoding happens in a background thread with a small bounded frame queue — if the encoder ever falls
+behind, frames are dropped rather than slowing down the render loop. Requires `ffmpeg` on `PATH`.
 
 ## Exhibitions
 

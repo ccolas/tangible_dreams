@@ -5,9 +5,11 @@ import time
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from save.midi import MIDIController
-from src.rs485 import RS485Controller
-from src.viz import create_backend
+# MIDIController/RS485Controller/create_backend are imported inside main() (not here) — the video
+# recorder's assembly step spawns worker processes via multiprocessing 'spawn', which re-executes
+# this file's top-level code (though not main() itself, thanks to the __name__ guard below). Heavy
+# imports up here (pygame, moderngl, rtmidi, serial) would otherwise load — and print banners —
+# uselessly in every one of those workers.
 
 repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 
@@ -33,6 +35,8 @@ SCREEN = 'external'  # or 'external' or 'window'
 REACTIVITY = "audio"  # "time", "audio", or "cv"
 AUDIO_MODE = "simple"  # "simple" (3 EMA signals) or "flux" (3 EMA + 3 flux)
 VISUALIZE_AUDIO = True
+COLOR_SPACE = "rgb_rotated"  # "rgb" (legacy), "oklch" (hue/chroma/lightness — tends to rainbow), or
+                        # "oklab" (lightness/a/b, Cartesian — no hue wraparound, smoother drift)
 
 def update_reactivity(cppn):
     """Update audio/time weight mods. Called once per frame.
@@ -71,8 +75,12 @@ def update_reactivity(cppn):
         cppn.needs_update = True
 
 async def main():
+    from save.midi import MIDIController
+    from src.rs485 import RS485Controller
+    from src.viz import create_backend
+
     params = dict(debug=DEBUG, res=RES, factor=FACTOR, visualize_audio=VISUALIZE_AUDIO,
-                  reactivity=REACTIVITY, audio_mode=AUDIO_MODE)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
+                  reactivity=REACTIVITY, audio_mode=AUDIO_MODE, color_space=COLOR_SPACE)#, load_from="/mnt/e85692fd-9cbc-4a8d-b5c5-9252bd9a34fd/Perso/Scratch/tangible_cppn/outputs/test//state_2025_06_09_120132.pkl")
     if CONTROLLER == 'midi':
         controller = MIDIController(output_path, params)
         asyncio.create_task(controller.start_polling_loop())  # async MIDI polling

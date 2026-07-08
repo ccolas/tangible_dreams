@@ -11,7 +11,8 @@ import pickle
 import jax
 
 from viz import create_backend
-from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping, noise
+from src.cppn_utils import activation_fns, build_coordinate_grid, input_functions, input_selector_mapping, zoom_mapping, bias_mapping, inverse_bias_mapping, noise, oklab_to_srgb, oklch_to_srgb, rgb_rotation_matrix, lin_to_srgb
+from src.postprocessing import postprocess_frame
 from save.misc.error_screen import generate_error_screen
 from save.misc.compute_n_cycles import compute_rounds
 from src.sound_input import AudioGate, AudioGateSimple
@@ -28,6 +29,24 @@ def _band_energy(mag, freqs, band):
 
 
 class CPPN:
+    # Output color space: 'rgb' (raw R,G,B — legacy), 'oklch' (Hue/Chroma/Lightness — polar,
+    # tends to rainbow since hue is an angle), 'oklab' (Lightness/a/b — Cartesian, no wraparound,
+    # smoother/more coherent color drift), or 'rgb_rotated' (still plain additive RGB — 0 stays
+    # black, 1,1,1 stays white — but the 3 primaries are hue-rotated + softened instead of raw R,G,B).
+    # Squash ranges — tune here.
+    OKLCH_CHROMA_RANGE = (0.03, 0.32)
+    OKLCH_LIGHTNESS_RANGE = (0.25, 0.85)
+    OKLAB_AB_RANGE = 0.35  # max |a|, |b| — keeps colors mostly within the sRGB-representable gamut
+    RGB_ROTATE_HUE_DEG = 25.0     # hue offset of the 3 primaries from pure R,G,B
+    RGB_ROTATE_SATURATION = 0.85  # 1.0 = as vivid as pure RGB, lower = softer/pastel primaries
+
+    # Per-input-node sine period (s) and phase (rad) for input_reactive_update. Deliberately
+    # non-commensurate periods (no simple ratio between them) so any two active inputs slowly drift
+    # in and out of phase instead of moving in lockstep — creates evolving beat patterns rather than
+    # a fixed, repeating relationship.
+    INPUT_SINE_PERIODS = {0: 16.5, 1: 19.5, 2: 14.25, 3: 19.05, 4: 15.45}  # 1.5x the base periods (50% slower)
+    INPUT_SINE_PHASES = {0: 0.0, 1: 1.3, 2: 2.7, 3: 0.6, 4: 4.1}
+
     def __init__(self, output_path, params):
         self.output_path = output_path
         self.params = params
@@ -40,6 +59,7 @@ class CPPN:
         self.high_res = 1900
         self.factor = params['factor']
         self.debug = params.get('debug', False)
+        self.color_space = params.get('color_space', 'rgb')
 
         self.reactivity = params['reactivity']
         # Architecture
@@ -149,15 +169,25 @@ class CPPN:
         (input_params2) for an input node while its switch is toggled on. Off leaves the shift
         fully manual (this value is unused).
 
-        x/y nodes sweep only the central half of the range (so pattern stays roughly on-screen);
-        all other inputs sweep the full [0, 1023] range.
+        x/y nodes: wobble the middle 50% of the shift range AT THE DEFAULT ZOOM, and keep that
+        on-screen amount fixed regardless of the current zoom knob — gb_x/gb_y get divided by zoom
+        downstream in _compute_inputs, so we pre-multiply by the current zoom here to cancel it out.
+        All other inputs sweep the full [0, 1023] range (their 2nd param isn't a spatial shift).
         """
-        period = 12.0
+        period = self.INPUT_SINE_PERIODS[node_idx]
+        phase = self.INPUT_SINE_PHASES[node_idx]
         omega = 2 * np.pi / period
-        center = 1023 / 2
-        full_amplitude = 1023 / 2
-        amplitude = full_amplitude * 0.5 if node_idx in (self.x_id, self.y_id) else full_amplitude
-        return center + amplitude * np.sin(omega * self.time + node_idx)
+        s = np.sin(omega * self.time + phase)
+
+        if node_idx in (self.x_id, self.y_id):
+            world_amplitude = float(bias_mapping(1023 * 0.75))  # shift value at the default-zoom "middle 50%" edge
+            zoom = float(zoom_mapping(self.device_state['input_params1'][node_idx]))
+            target_world = world_amplitude * s * zoom
+            return float(inverse_bias_mapping(target_world))
+        else:
+            center = 1023 / 2
+            amplitude = 1023 / 2
+            return center + amplitude * s
 
     def reactive_update(self, i, w):
         """
@@ -255,6 +285,11 @@ class CPPN:
 
         activations = tuple(self.activations)  # static inside JIT
         input_fns = tuple(self.input_functions)  # static inside JIT
+        color_space = self.color_space  # static inside JIT
+        c_min, c_max = self.OKLCH_CHROMA_RANGE
+        l_min, l_max = self.OKLCH_LIGHTNESS_RANGE
+        ab_range = self.OKLAB_AB_RANGE
+        rot_matrix = rgb_rotation_matrix(self.RGB_ROTATE_HUE_DEG, self.RGB_ROTATE_SATURATION)  # (3,3) constant
 
         from jax import jit, lax
         import jax
@@ -340,10 +375,41 @@ class CPPN:
 
             out = net[n_in + n_h:n_in + n_h + n_out]
             out = (out + state['output_biases'][:, None]) * (state['output_slopes'][:, None] + state['output_slope_mods'][:, None])
-            # out = jax.nn.sigmoid(5 * out)
             out = out * active[n_in + n_h:n_in + n_h + n_out]
-            out = jnp.clip(out, 0.0, 2.0)  # (n_out, N)
-            img = (out.T * 255.0).astype(jnp.uint8).reshape(H, W, n_out)
+
+            if color_space == 'oklab':
+                # out[0] -> lightness (squashed), out[1]/out[2] -> a/b (Cartesian, tanh-bounded —
+                # no angle, so no forced wraparound/rainbow; smooth net output -> smooth color drift).
+                light = l_min + (l_max - l_min) * jax.nn.sigmoid(out[0])
+                a = ab_range * jnp.tanh(out[1])
+                b = ab_range * jnp.tanh(out[2])
+                r, g, bch = oklab_to_srgb(light, a, b)
+                rgb = jnp.clip(jnp.stack([r, g, bch], axis=0), 0.0, 1.0)  # (n_out, N)
+                img = (rgb.T * 255.0).astype(jnp.uint8).reshape(H, W, n_out)
+            elif color_space == 'oklch':
+                # out[0] -> hue (wraps, no clipping seams), out[1] -> chroma, out[2] -> lightness
+                # (both squashed into a pleasant sub-range so the piece can't go muddy-grey or blown-out).
+                hue = jnp.mod(out[0] * jnp.pi, 2 * jnp.pi)
+                chroma = c_min + (c_max - c_min) * jax.nn.sigmoid(out[1])
+                light = l_min + (l_max - l_min) * jax.nn.sigmoid(out[2])
+                r, g, b = oklch_to_srgb(light, chroma, hue)
+                rgb = jnp.clip(jnp.stack([r, g, b], axis=0), 0.0, 1.0)  # (n_out, N)
+                img = (rgb.T * 255.0).astype(jnp.uint8).reshape(H, W, n_out)
+            elif color_space == 'rgb_rotated':
+                # Still a plain additive space: c_i in [0,1] per channel, output = M @ c. M rotates
+                # R,G,B's hue around the black-white diagonal (+ softens them), so 0 -> black and
+                # (1,1,1) -> white exactly as with raw RGB, but the 3 primaries aren't harsh R/G/B.
+                # Anchored at 0 (unlike sigmoid, which maps 0 -> 0.5 -> mid-grey instead of black).
+                # Mixed in LINEAR light (not gamma-encoded sRGB) so a single channel fading 1->0 is a
+                # physically/perceptually linear dim to black, not a gamma-skewed one; gamma-encode
+                # only once, at the very end, for display.
+                c = jnp.clip(out, 0.0, 1.0)  # (n_out, N), each channel in [0,1]
+                rgb_lin = jnp.clip(jnp.matmul(rot_matrix, c), 0.0, 1.0)  # (3, N), linear light
+                rgb = lin_to_srgb(rgb_lin)
+                img = (rgb.T * 255.0).astype(jnp.uint8).reshape(H, W, n_out)
+            else:
+                out = jnp.clip(out, 0.0, 2.0)  # (n_out, N)
+                img = (out.T * 255.0).astype(jnp.uint8).reshape(H, W, n_out)
             return img
 
         self._compute_inputs = _compute_inputs
@@ -358,76 +424,14 @@ class CPPN:
         if self.n_cycles is None: self.n_cycles = 1
         print(f'Setting n_cycles to {self.n_cycles}')
 
-    def apply_postprocessing(self, img):
-        """Apply post-processing matching the GLSL shader order:
-        symmetry → displacement → (sample) → invert → grain
-        """
-        H, W = img.shape[:2]
-        out = img.astype(np.float32) / 255.0
-
-        # Build normalized UV coords [0,1]
-        uu, vv = np.meshgrid(np.linspace(0, 1, W, endpoint=False),
-                             np.linspace(0, 1, H, endpoint=False))
-        uv_x = uu
-        uv_y = vv
-
-        # --- symmetry (operates on UV) ---
-        if self.symmetry_mode != 0:
-            sector_map = {1: 6, 2: 8, 3: 12, 4: 4}
-            sectors = sector_map.get(self.symmetry_mode, self.symmetry_mode)
-            uv_x, uv_y = self._kaleidoscope_uv(uv_x, uv_y, sectors)
-
-        # --- displacement (operates on UV) ---
-        if self.displace_strength > 0.001:
-            d = self.displace_strength  # fraction of screen (0-0.05)
-            dx = (self._hash2d(uv_x * 200.0, uv_y * 200.0) - 0.5) * d
-            dy = (self._hash2d(uv_x * 300.0, uv_y * 300.0) - 0.5) * d
-            uv_x = uv_x + dx
-            uv_y = uv_y + dy
-
-        # Clamp and sample
-        uv_x = np.clip(uv_x, 0.0, 1.0 - 1e-6)
-        uv_y = np.clip(uv_y, 0.0, 1.0 - 1e-6)
-        ix = (uv_x * W).astype(int)
-        iy = (uv_y * H).astype(int)
-        out = out[iy, ix]
-
-        # --- invert ---
-        if self.invert:
-            out = 1.0 - out
-
-        # --- grain (uniform monochrome, matching shader) ---
-        if self.grain_strength > 0.001:
-            g = (self._hash2d(uv_x * 500.0, uv_y * 500.0) - 0.5) * self.grain_strength
-            out = out + g[:, :, np.newaxis]
-
-        out = np.clip(out, 0.0, 1.0)
-        return (out * 255).astype(np.uint8)
-
-    @staticmethod
-    def _hash2d(x, y):
-        """Deterministic hash matching GLSL: fract(sin(dot(co, vec2(12.9898,78.233))) * 43758.5453)"""
-        dot = x * 12.9898 + y * 78.233
-        return np.mod(np.sin(dot) * 43758.5453, 1.0)
-
-    @staticmethod
-    def _kaleidoscope_uv(uv_x, uv_y, sectors):
-        """Kaleidoscope matching the GLSL shader."""
-        cx, cy = 0.5, 0.5
-        px = uv_x - cx
-        py = uv_y - cy
-
-        a = np.arctan2(py, px)
-        r = np.sqrt(px * px + py * py)
-
-        sector = 2.0 * np.pi / sectors
-        a = np.mod(a, sector)
-
-        # Reflect every second sector
-        reflect = a > sector * 0.5
-        a = np.where(reflect, sector - a, a)
-
-        return cx + r * np.cos(a), cy + r * np.sin(a)
+    def apply_postprocessing(self, img, grain_strength=None, displace_strength=None, invert=None, symmetry_mode=None):
+        """Thin wrapper around the module-level postprocess_frame() — params default to the
+        same-named self attributes (set transiently by save_state) if not passed explicitly."""
+        grain_strength = getattr(self, 'grain_strength', 0.0) if grain_strength is None else grain_strength
+        displace_strength = getattr(self, 'displace_strength', 0.0) if displace_strength is None else displace_strength
+        invert = getattr(self, 'invert', False) if invert is None else invert
+        symmetry_mode = getattr(self, 'symmetry_mode', 0) if symmetry_mode is None else symmetry_mode
+        return postprocess_frame(img, grain_strength, displace_strength, invert, symmetry_mode)
 
     # def sample_network(self):
     #     while True:

@@ -7,6 +7,7 @@ from pygame.locals import OPENGL, DOUBLEBUF, RESIZABLE, FULLSCREEN
 import rtmidi
 import asyncio
 from src.github_save import save_and_push
+from src.video_recorder import VideoRecorder
 import os, sys
 
 try:
@@ -76,6 +77,7 @@ class ModernGLBackend:
             21: 'bass gate %', 22: 'mid gate %', 23: 'treble gate %',
             41: 'restart application', 45: 'save state + git push',
             46: 'cycle symmetry mode', 60: 'toggle color inversion',
+            59: 'toggle video recording (+ audio)',
         }
         if control in shared:
             return shared[control]
@@ -102,6 +104,7 @@ class ModernGLBackend:
         self.invert = False
         self.needs_update = False
         self.measured_delay = 0.030  # updated by main loop
+        self.recorder = VideoRecorder(cppn)
 
         # Create an OpenGL-enabled Pygame window
         flags = DOUBLEBUF | OPENGL
@@ -161,34 +164,38 @@ class ModernGLBackend:
                 uniform float chroma_shift;
                 uniform bool invert_colors;
                 uniform int symmetry_mode;   // 0 = off, 1..n = different kaleidoscopes
-                
+                uniform float aspect;        // render width / height — keeps sectors equal-angle on a non-square canvas
+
                 in vec2 v_tex;
                 out vec4 f_color;
-                
+
                 // simple hash for grain/displacement
                 float rand(vec2 co) {
                     return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
                 }
-                
+
                 vec2 kaleidoscope(vec2 uv, int sectors) {
                     // center
                     vec2 c = vec2(0.5, 0.5);
                     vec2 p = uv - c;
-                
+                    p.x *= aspect;  // correct for non-square canvas so sectors are equal-size in both axes
+
                     float a = atan(p.y, p.x);
                     float r = length(p);
-                
+
                     // sector angle
                     float sector = 3.141592 * 2.0 / float(sectors);
-                
+
                     // wrap into sector
                     a = mod(a, sector);
-                
+
                     // reflect every second sector
                     if (a > sector * 0.5)
                         a = sector - a;
-                
-                    return c + r * vec2(cos(a), sin(a));
+
+                    vec2 result = r * vec2(cos(a), sin(a));
+                    result.x /= aspect;
+                    return c + result;
                 }
 
                 void main()
@@ -234,6 +241,7 @@ class ModernGLBackend:
         self.prog['displace_strength'] = 0.0
         self.prog['invert_colors'] = False
         self.prog['symmetry_mode'] = 0
+        self.prog['aspect'] = width / height
 
         vbo = self.ctx.buffer(vertices.tobytes())
         vao_content = [
@@ -258,6 +266,12 @@ class ModernGLBackend:
         self.prog['symmetry_mode'].value = self.symmetry_mode
         self.vao.render(moderngl.TRIANGLE_STRIP)
         pygame.display.flip()
+
+        # img_np is already a CPU array (needed above regardless), so pushing costs nothing extra
+        # here — the recorder's background thread does the (potentially slow) postprocessing/encode.
+        self.recorder.push_frame(img_np, grain_strength=self.grain_strength,
+                                  displace_strength=self.displace_strength, invert=self.invert,
+                                  symmetry_mode=self.symmetry_mode)
 
     def _viz_params(self):
         return {
@@ -300,6 +314,14 @@ class ModernGLBackend:
                 # Save state
                 elif control == 45 and value == 127:
                     asyncio.create_task(save_and_push(self.cppn, viz_params=self._viz_params()))
+
+                # Toggle video recording (+ audio from the Visual_Sink monitor)
+                elif control == 59 and value == 127:
+                    if self.recorder.recording:
+                        self.recorder.stop()
+                    else:
+                        video_path = f"{self.cppn.output_path}/video_{self.cppn.timestamp}.mp4"
+                        self.recorder.start(video_path, self.render_width, self.render_height)
 
                 # Slider layout (CC 0-7):
                 #   0: grain, 1: displacement, 2: delay,
